@@ -302,13 +302,13 @@ def read_bin(file, skip_wfm=False):
                 MaxCounts = 32768.0
                 AmpScaleFactor = MaxInput/(Gain*MaxCounts)
 
-                s = struct.unpack(str(int(LEN/2))+'h', data.read(LEN))
+                s = np.frombuffer(data.read(LEN), dtype=np.int16)
 
                 # Append waveform to wfm with data stored as a byte string
                 if not skip_wfm:
                     channel = hardware[hardware['CH'] == CID]
-                    re = [TOT, CID, channel['SRATE'][0], channel['TDLY']
-                          [0], (AmpScaleFactor*np.array(s)).tobytes()]
+                    re = [TOT, CID, channel['SRATE'][0], channel['TDLY'][0],
+                          (AmpScaleFactor*s).tobytes()]
                     wfm.append(re)
 
             else:
