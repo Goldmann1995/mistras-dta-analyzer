@@ -44,7 +44,7 @@ CHID_byte_len = {
 
 def _bytes_to_RTOT(bytes):
     """Helper function to convert a 6-byte sequence to a time offset"""
-    (i1, i2) = struct.unpack('IH', bytes)
+    (i1, i2) = struct.unpack('<IH', bytes)
     return ((i1+2**32*i2)*.25e-6)
 
 
@@ -80,15 +80,15 @@ def read_bin(file, skip_wfm=False):
         while byte != b"":
 
             # Get the message length byte
-            [LEN] = struct.unpack('H', byte)
+            [LEN] = struct.unpack('<H', byte)
 
             # Read the message ID byte
-            [b1] = struct.unpack('B', data.read(1))
+            [b1] = struct.unpack('<B', data.read(1))
             LEN = LEN-1
 
             # ID 40-49 have an extra byte
             if b1 >= 40 and b1 <= 49:
-                [b2] = struct.unpack('B', data.read(1))
+                [b2] = struct.unpack('<B', data.read(1))
                 LEN = LEN-1
 
             if b1 == 1:
@@ -97,7 +97,7 @@ def read_bin(file, skip_wfm=False):
                 RTOT = _bytes_to_RTOT(data.read(6))
                 LEN = LEN-6
 
-                [CID] = struct.unpack('B', data.read(1))
+                [CID] = struct.unpack('<B', data.read(1))
                 LEN = LEN-1
 
                 record = [RTOT, CID]
@@ -107,28 +107,28 @@ def read_bin(file, skip_wfm=False):
                     b = CHID_byte_len[CHID]
 
                     if CHID_to_str[CHID] == 'RMS':
-                        [v] = struct.unpack('H', data.read(b))
+                        [v] = struct.unpack('<H', data.read(b))
                         v = v/5000
 
                     # DURATION
                     elif CHID_to_str[CHID] == 'DURATION':
-                        [v] = struct.unpack('i', data.read(b))
+                        [v] = struct.unpack('<i', data.read(b))
 
                     # SIG STRENGTH
                     elif CHID_to_str[CHID] == 'SIG STRENGTH':
-                        [v] = struct.unpack('i', data.read(b))
+                        [v] = struct.unpack('<i', data.read(b))
                         v = v*3.05
 
                     # ABS-ENERGY
                     elif CHID_to_str[CHID] == 'ABS-ENERGY':
-                        [v] = struct.unpack('f', data.read(b))
+                        [v] = struct.unpack('<f', data.read(b))
                         v = v*9.31e-4
 
                     elif b == 1:
-                        [v] = struct.unpack('B', data.read(b))
+                        [v] = struct.unpack('<B', data.read(b))
 
                     elif b == 2:
-                        [v] = struct.unpack('H', data.read(b))
+                        [v] = struct.unpack('<H', data.read(b))
 
                     LEN = LEN-b
                     record.append(v)
@@ -140,7 +140,7 @@ def read_bin(file, skip_wfm=False):
 
             elif b1 == 7:
                 logging.info("User Comments/Test Label:")
-                [m] = struct.unpack(str(LEN)+'s', data.read(LEN))
+                [m] = struct.unpack('<{0}s'.format(LEN), data.read(LEN))
                 logging.info(m.decode("ascii").strip('\x00'))
 
             elif b1 == 8:
@@ -160,7 +160,7 @@ def read_bin(file, skip_wfm=False):
                 data.read(2)
                 LEN = LEN-2
 
-                [m] = struct.unpack(str(LEN)+'s', data.read(LEN))
+                [m] = struct.unpack('<{0}s'.format(LEN), data.read(LEN))
                 logging.info(m[:-3].decode('ascii'))
 
             elif b1 == 42:
@@ -172,61 +172,61 @@ def read_bin(file, skip_wfm=False):
 
                 # SUBID
                 while LEN > 0:
-                    [LSUB] = struct.unpack('H', data.read(2))
+                    [LSUB] = struct.unpack('<H', data.read(2))
                     LEN = LEN-LSUB
 
-                    [SUBID] = struct.unpack('B', data.read(1))
+                    [SUBID] = struct.unpack('<B', data.read(1))
                     LSUB = LSUB-1
 
                     if SUBID == 5:
                         logging.info("\tEvent Data Set Definition")
 
                         # Number of AE characteristics
-                        [CHID] = struct.unpack('B', data.read(1))
+                        [CHID] = struct.unpack('<B', data.read(1))
                         LSUB = LSUB-1
 
                         # read CHID values
                         CHID_list = struct.unpack(
-                            str(CHID)+'B', data.read(CHID))
+                            '<{0}B'.format(CHID), data.read(CHID))
                         LSUB = LSUB-CHID
 
                     elif SUBID == 23:
                         logging.info("\tSet Gain")
-                        CID, V = struct.unpack('BB', data.read(2))
+                        CID, V = struct.unpack('<BB', data.read(2))
                         gain[CID] = V
                         LSUB = LSUB-2
 
                     elif SUBID == 173:
-                        [SUBID2] = struct.unpack('B', data.read(1))
+                        [SUBID2] = struct.unpack('<B', data.read(1))
                         LSUB = LSUB-1
 
                         if SUBID2 == 42:
                             logging.info("\t173,42 Hardware Setup")
 
-                            [MVERN, b2] = struct.unpack('BB', data.read(2))
+                            [MVERN, b2] = struct.unpack('<BB', data.read(2))
                             LSUB = LSUB-2
 
                             # ADT
                             data.read(1)
                             LSUB = LSUB-1
 
-                            [SETS, b2] = struct.unpack('BB', data.read(2))
+                            [SETS, b2] = struct.unpack('<BB', data.read(2))
                             LSUB = LSUB-2
 
-                            [SLEN] = struct.unpack('H', data.read(2))
+                            [SLEN] = struct.unpack('<H', data.read(2))
                             LSUB = LSUB-2
 
-                            [CHID] = struct.unpack('B', data.read(1))
+                            [CHID] = struct.unpack('<B', data.read(1))
                             LSUB = LSUB-1
 
-                            [HLK] = struct.unpack('H', data.read(2))
+                            [HLK] = struct.unpack('<H', data.read(2))
                             LSUB = LSUB-2
 
                             # HITS
                             data.read(2)
                             LSUB = LSUB-2
 
-                            [SRATE] = struct.unpack('H', data.read(2))
+                            [SRATE] = struct.unpack('<H', data.read(2))
                             LSUB = LSUB-2
 
                             # TMODE
@@ -237,7 +237,7 @@ def read_bin(file, skip_wfm=False):
                             data.read(2)
                             LSUB = LSUB-2
 
-                            [TDLY] = struct.unpack('h', data.read(2))
+                            [TDLY] = struct.unpack('<h', data.read(2))
                             LSUB = LSUB-2
 
                             # MXIN
@@ -262,7 +262,7 @@ def read_bin(file, skip_wfm=False):
 
             elif b1 == 99:
                 logging.info("Time and Date of Test Start:")
-                [m] = struct.unpack(str(LEN)+'s', data.read(LEN))
+                [m] = struct.unpack('<{0}s'.format(LEN), data.read(LEN))
                 m = m.decode("ascii").strip('\x00')
                 logging.info(m)
                 test_start_time = datetime.strptime(
@@ -284,13 +284,13 @@ def read_bin(file, skip_wfm=False):
             elif b1 == 173:
                 logging.info("Digital AE Waveform Data")
 
-                [SUBID] = struct.unpack('B', data.read(1))
+                [SUBID] = struct.unpack('<B', data.read(1))
                 LEN = LEN-1
 
                 TOT = _bytes_to_RTOT(data.read(6))
                 LEN = LEN-6
 
-                [CID] = struct.unpack('B', data.read(1))
+                [CID] = struct.unpack('<B', data.read(1))
                 LEN = LEN-1
 
                 # ALB
