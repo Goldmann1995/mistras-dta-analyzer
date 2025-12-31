@@ -203,50 +203,11 @@ def read_bin(file, skip_wfm=False):
                         if SUBID2 == 42:
                             logging.info("\t173,42 Hardware Setup")
 
-                            [MVERN, b2] = struct.unpack('<BB', data.read(2))
-                            LSUB = LSUB-2
-
-                            # ADT
-                            data.read(1)
-                            LSUB = LSUB-1
-
-                            [SETS, b2] = struct.unpack('<BB', data.read(2))
-                            LSUB = LSUB-2
-
-                            [SLEN] = struct.unpack('<H', data.read(2))
-                            LSUB = LSUB-2
-
-                            [CHID] = struct.unpack('<B', data.read(1))
-                            LSUB = LSUB-1
-
-                            [HLK] = struct.unpack('<H', data.read(2))
-                            LSUB = LSUB-2
-
-                            # HITS
-                            data.read(2)
-                            LSUB = LSUB-2
-
-                            [SRATE] = struct.unpack('<H', data.read(2))
-                            LSUB = LSUB-2
-
-                            # TMODE
-                            data.read(2)
-                            LSUB = LSUB-2
-
-                            # TSRC
-                            data.read(2)
-                            LSUB = LSUB-2
-
-                            [TDLY] = struct.unpack('<h', data.read(2))
-                            LSUB = LSUB-2
-
-                            # MXIN
-                            data.read(2)
-                            LSUB = LSUB-2
-
-                            # THRD
-                            data.read(2)
-                            LSUB = LSUB-2
+                            [MVERN, b2, ADT, SETS, SLEN, CHID, HLK,
+                             SRATE, TMODE, TSRC, TDLY, MXIN, THRD] = \
+                                struct.unpack(
+                                    '<BBBBxHBH2xHHHhHH', data.read(24))
+                            LSUB = LSUB-24
 
                             hardware.append([CHID, 1000*SRATE, TDLY])
 
@@ -290,12 +251,8 @@ def read_bin(file, skip_wfm=False):
                 TOT = _bytes_to_RTOT(data.read(6))
                 LEN = LEN-6
 
-                [CID] = struct.unpack('<B', data.read(1))
-                LEN = LEN-1
-
-                # ALB
-                data.read(1)
-                LEN = LEN-1
+                [CID, ALB] = struct.unpack('<BB', data.read(2))
+                LEN = LEN-2
 
                 MaxInput = 10.0
                 Gain = 10**(gain[CID]/20)
