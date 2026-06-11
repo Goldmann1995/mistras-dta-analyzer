@@ -342,6 +342,40 @@ th.sortable:hover { color: var(--text-2); }
 .view-charts { display: flex; flex-direction: column; gap: 12px; }
 .charts-controls { display: flex; gap: 10px; align-items: center; }
 
+/* ===== Wavelet ===== */
+.view-wavelet { display: flex; flex-direction: column; gap: 12px; }
+.wavelet-tabs {
+  display: flex; gap: 2px; background: var(--bg-1); border-radius: var(--radius);
+  padding: 2px; border: 1px solid var(--border);
+}
+.wavelet-tabs button {
+  padding: 6px 14px; border: none; background: transparent; color: var(--text-2);
+  font-family: var(--font-ui); font-size: 12px; font-weight: 500; cursor: pointer;
+  border-radius: 4px; transition: all 0.15s;
+}
+.wavelet-tabs button.active { background: var(--bg-3); color: var(--cyan); }
+.wavelet-tabs button:hover:not(.active) { color: var(--text-1); }
+.wavelet-controls {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+}
+.wavelet-controls label {
+  display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-2);
+  font-family: var(--font-data);
+}
+.wavelet-controls input, .wavelet-controls select {
+  background: var(--bg-1); border: 1px solid var(--border); color: var(--text-1);
+  padding: 4px 8px; border-radius: 4px; font-size: 12px; font-family: var(--font-data);
+  width: 90px;
+}
+.wavelet-controls select { width: auto; }
+.spectrogram-container { position: relative; width: 100%; }
+.spectrogram-container canvas { width: 100%; border-radius: var(--radius); }
+.loading-indicator {
+  display: flex; align-items: center; justify-content: center;
+  padding: 40px; color: var(--text-3); font-family: var(--font-data); font-size: 13px;
+}
+.velocity-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 12px; }
+
 /* ===== Scrollbar ===== */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -1,8 +1,12 @@
+import os
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from ..services import dta_service
+from ..services.signal_analysis import (
+    compute_cwt, compute_group_velocity_dispersion, compute_cross_channel_velocity,
+)
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
@@ -49,6 +53,81 @@ async def get_waveform_fft(file_id: str, index: int, keep_pretrigger: bool = Fal
         raise HTTPException(404, "File not found")
     except IndexError as e:
         raise HTTPException(404, str(e))
+
+
+@router.get("/{file_id}/waveform/{index}/cwt")
+async def get_cwt(
+    file_id: str,
+    index: int,
+    wavelet: str = "morl",
+    freq_min: float = 1000,
+    freq_max: Optional[float] = None,
+    num_freqs: int = 128,
+    keep_pretrigger: bool = False,
+):
+    try:
+        cache = dta_service._file_cache[file_id]
+        wfm = cache['wfm']
+        if index >= len(wfm):
+            raise IndexError(f"Waveform index {index} out of range")
+        return compute_cwt(
+            wfm[index], wavelet=wavelet,
+            freq_min=freq_min, freq_max=freq_max,
+            num_freqs=num_freqs, keep_pretrigger=keep_pretrigger,
+        )
+    except KeyError:
+        raise HTTPException(404, "File not found")
+    except IndexError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/{file_id}/waveform/{index}/dispersion")
+async def get_dispersion(
+    file_id: str,
+    index: int,
+    wavelet: str = "morl",
+    freq_min: float = 1000,
+    freq_max: Optional[float] = None,
+    num_freqs: int = 64,
+    keep_pretrigger: bool = False,
+):
+    try:
+        cache = dta_service._file_cache[file_id]
+        wfm = cache['wfm']
+        if index >= len(wfm):
+            raise IndexError(f"Waveform index {index} out of range")
+        return compute_group_velocity_dispersion(
+            wfm[index], wavelet=wavelet,
+            freq_min=freq_min, freq_max=freq_max,
+            num_freqs=num_freqs, keep_pretrigger=keep_pretrigger,
+        )
+    except KeyError:
+        raise HTTPException(404, "File not found")
+    except IndexError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/{file_id}/group-velocity")
+async def get_group_velocity(
+    file_id: str,
+    sensor_distance: float = Query(..., description="Distance between sensors in meters"),
+    keep_pretrigger: bool = False,
+):
+    try:
+        cache = dta_service._file_cache[file_id]
+        return compute_cross_channel_velocity(
+            cache['wfm'], cache['rec'],
+            sensor_distance=sensor_distance,
+            keep_pretrigger=keep_pretrigger,
+        )
+    except KeyError:
+        raise HTTPException(404, "File not found")
+    except Exception as e:
+        raise HTTPException(400, str(e))
 
 
 @router.get("/{file_id}/channels")
@@ -102,22 +181,11 @@ async def export_npz(
 ):
     try:
         filepath = dta_service.export_npz(
-            file_id,
-            channel=channel,
-            keep_pretrigger=keep_pretrigger,
-            max_waveforms=max_waveforms,
-            normalize=normalize,
-            fixed_length=fixed_length,
+            file_id, channel=channel, keep_pretrigger=keep_pretrigger,
+            max_waveforms=max_waveforms, normalize=normalize, fixed_length=fixed_length,
         )
-        return FileResponse(
-            filepath,
-            media_type="application/octet-stream",
-            filename=os.path.basename(filepath),
-        )
+        return FileResponse(filepath, media_type="application/octet-stream", filename=os.path.basename(filepath))
     except KeyError:
         raise HTTPException(404, "File not found")
     except ValueError as e:
         raise HTTPException(400, str(e))
-
-
-import os

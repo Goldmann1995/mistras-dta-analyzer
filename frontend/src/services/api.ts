@@ -2,6 +2,7 @@ import axios from 'axios';
 import type {
   FileInfo, HitsResponse, WaveformData, FFTResult,
   ChannelStats, ScatterData, HistogramData, PluginInfo, ExportOptions,
+  CWTResult, DispersionResult, GroupVelocityResult,
 } from '../types';
 
 const api = axios.create({
@@ -70,6 +71,31 @@ export async function getHistogramData(
 ): Promise<HistogramData> {
   const { data } = await api.get<HistogramData>(`/api/analysis/${fileId}/histogram`, {
     params: { field, bins, channel },
+  });
+  return data;
+}
+
+export async function getCWT(
+  fileId: string, index: number,
+  opts: { wavelet?: string; freq_min?: number; freq_max?: number; num_freqs?: number; keep_pretrigger?: boolean } = {},
+): Promise<CWTResult> {
+  const { data } = await api.get<CWTResult>(`/api/analysis/${fileId}/waveform/${index}/cwt`, { params: opts });
+  return data;
+}
+
+export async function getDispersion(
+  fileId: string, index: number,
+  opts: { wavelet?: string; freq_min?: number; freq_max?: number; num_freqs?: number; keep_pretrigger?: boolean } = {},
+): Promise<DispersionResult> {
+  const { data } = await api.get<DispersionResult>(`/api/analysis/${fileId}/waveform/${index}/dispersion`, { params: opts });
+  return data;
+}
+
+export async function getGroupVelocity(
+  fileId: string, sensorDistance: number, keepPretrigger: boolean = false,
+): Promise<GroupVelocityResult> {
+  const { data } = await api.get<GroupVelocityResult>(`/api/analysis/${fileId}/group-velocity`, {
+    params: { sensor_distance: sensorDistance, keep_pretrigger: keepPretrigger },
   });
   return data;
 }

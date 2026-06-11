@@ -90,6 +90,45 @@ export interface PluginInfo {
   endpoints: string[];
 }
 
+export interface CWTResult {
+  time_axis: number[];
+  freq_axis: number[];
+  power: number[][];
+  peak_frequency: number;
+  peak_time: number;
+  wavelet: string;
+  channel: number;
+  sample_rate: number;
+}
+
+export interface DispersionResult {
+  frequencies: number[];
+  arrival_times: number[];
+  peak_times: number[];
+  energy_at_freq: number[];
+  channel: number;
+  sample_rate: number;
+}
+
+export interface VelocityPair {
+  ch1: number;
+  ch2: number;
+  event_count: number;
+  event_times: number[];
+  delta_t: number[];
+  velocities: number[];
+  avg_velocity: number;
+  std_velocity: number;
+  median_velocity: number;
+}
+
+export interface GroupVelocityResult {
+  sensor_distance: number;
+  channel_count: number;
+  channels: number[];
+  pairs: VelocityPair[];
+}
+
 export interface ExportOptions {
   channel?: number;
   keep_pretrigger: boolean;

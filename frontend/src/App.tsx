@@ -9,6 +9,7 @@ import ParametricCharts from './components/ParametricCharts';
 import ChannelView from './components/ChannelView';
 import ExportPanel from './components/ExportPanel';
 import PluginPanel from './components/PluginPanel';
+import WaveletView from './components/WaveletView';
 import type { FileInfo } from './types';
 import './App.css';
 
@@ -39,6 +40,7 @@ function App() {
       case 'dashboard': return <Dashboard file={file} />;
       case 'hits': return <HitTable file={file} onSelectHit={onHitSelect} />;
       case 'waveform': return <WaveformViewer file={file} initialIndex={wfIdx} />;
+      case 'wavelet': return <WaveletView file={file} />;
       case 'charts': return <ParametricCharts file={file} />;
       case 'channels': return <ChannelView file={file} />;
       case 'export': return <ExportPanel file={file} />;
