@@ -1,5 +1,6 @@
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from ..services import dta_service
 
@@ -31,9 +32,9 @@ async def get_hits(
 
 
 @router.get("/{file_id}/waveform/{index}")
-async def get_waveform(file_id: str, index: int):
+async def get_waveform(file_id: str, index: int, keep_pretrigger: bool = False):
     try:
-        return dta_service.get_waveform(file_id, index)
+        return dta_service.get_waveform(file_id, index, keep_pretrigger=keep_pretrigger)
     except KeyError:
         raise HTTPException(404, "File not found")
     except IndexError as e:
@@ -41,9 +42,9 @@ async def get_waveform(file_id: str, index: int):
 
 
 @router.get("/{file_id}/waveform/{index}/fft")
-async def get_waveform_fft(file_id: str, index: int):
+async def get_waveform_fft(file_id: str, index: int, keep_pretrigger: bool = False):
     try:
-        return dta_service.get_waveform_fft(file_id, index)
+        return dta_service.get_waveform_fft(file_id, index, keep_pretrigger=keep_pretrigger)
     except KeyError:
         raise HTTPException(404, "File not found")
     except IndexError as e:
@@ -88,3 +89,35 @@ async def get_histogram(
         raise HTTPException(404, "File not found")
     except Exception as e:
         raise HTTPException(400, str(e))
+
+
+@router.get("/{file_id}/export/npz")
+async def export_npz(
+    file_id: str,
+    channel: Optional[int] = None,
+    keep_pretrigger: bool = False,
+    max_waveforms: Optional[int] = None,
+    normalize: bool = False,
+    fixed_length: Optional[int] = None,
+):
+    try:
+        filepath = dta_service.export_npz(
+            file_id,
+            channel=channel,
+            keep_pretrigger=keep_pretrigger,
+            max_waveforms=max_waveforms,
+            normalize=normalize,
+            fixed_length=fixed_length,
+        )
+        return FileResponse(
+            filepath,
+            media_type="application/octet-stream",
+            filename=os.path.basename(filepath),
+        )
+    except KeyError:
+        raise HTTPException(404, "File not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+import os

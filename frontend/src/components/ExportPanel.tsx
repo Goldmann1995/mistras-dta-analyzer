@@ -1,0 +1,95 @@
+import { useState } from 'react';
+import { getExportUrl } from '../services/api';
+import type { FileInfo, ExportOptions } from '../types';
+
+interface Props { file: FileInfo; }
+
+export default function ExportPanel({ file }: Props) {
+  const [opts, setOpts] = useState<ExportOptions>({
+    keep_pretrigger: false,
+    normalize: false,
+  });
+
+  const handleExport = () => {
+    const url = getExportUrl(file.file_id, opts);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    a.click();
+  };
+
+  return (
+    <div className="view-export">
+      <div className="export-header">
+        <h2>Data Export</h2>
+        <p>Export waveform data as .npz for neural network training</p>
+      </div>
+
+      <div className="export-form">
+        <div className="export-section">
+          <h3>Output Format</h3>
+          <div className="export-preview">
+            <code>
+              waveforms: (N, L) float32 — voltage arrays{'\n'}
+              times: (N,) float64 — event timestamps{'\n'}
+              channels: (N,) int32 — channel IDs{'\n'}
+              sample_rates: (N,) float64 — sampling rates{'\n'}
+              amplitudes: (N,) float32 — hit amplitudes{'\n'}
+              energies: (N,) float32 — hit energies{'\n'}
+              durations: (N,) float32 — event durations
+            </code>
+          </div>
+        </div>
+
+        <div className="export-section">
+          <h3>Configuration</h3>
+
+          <div className="export-field">
+            <label>Channel</label>
+            <select className="filter-select" value={opts.channel ?? ''} onChange={e => setOpts({ ...opts, channel: e.target.value ? Number(e.target.value) : undefined })}>
+              <option value="">All channels</option>
+              {file.channels.map(ch => <option key={ch} value={ch}>CH{ch}</option>)}
+            </select>
+          </div>
+
+          <div className="export-field">
+            <label>Max waveforms</label>
+            <input type="number" className="filter-input" placeholder="All" min={1} value={opts.max_waveforms ?? ''} onChange={e => setOpts({ ...opts, max_waveforms: e.target.value ? Number(e.target.value) : undefined })} />
+          </div>
+
+          <div className="export-field">
+            <label>Fixed length (samples)</label>
+            <input type="number" className="filter-input" placeholder="Auto (pad to max)" min={1} value={opts.fixed_length ?? ''} onChange={e => setOpts({ ...opts, fixed_length: e.target.value ? Number(e.target.value) : undefined })} />
+          </div>
+
+          <div className="export-toggles">
+            <label className="ctrl-toggle">
+              <input type="checkbox" checked={opts.normalize} onChange={e => setOpts({ ...opts, normalize: e.target.checked })} />
+              <span>Normalize to [-1, 1]</span>
+            </label>
+            <label className="ctrl-toggle">
+              <input type="checkbox" checked={opts.keep_pretrigger} onChange={e => setOpts({ ...opts, keep_pretrigger: e.target.checked })} />
+              <span>Keep pre-trigger data</span>
+            </label>
+          </div>
+        </div>
+
+        <div className="export-section">
+          <h3>Summary</h3>
+          <div className="export-summary">
+            <span>Source: {file.filename}</span>
+            <span>Available: {file.waveform_count.toLocaleString()} waveforms</span>
+            <span>Channels: {opts.channel ? `CH${opts.channel}` : `All (${file.channels.map(c => `CH${c}`).join(', ')})`}</span>
+            <span>Pre-trigger: {opts.keep_pretrigger ? 'included' : 'trimmed'}</span>
+            <span>Normalize: {opts.normalize ? 'yes' : 'no'}</span>
+            {opts.fixed_length && <span>Fixed length: {opts.fixed_length} samples</span>}
+          </div>
+        </div>
+
+        <button className="export-btn" onClick={handleExport}>
+          Download .npz
+        </button>
+      </div>
+    </div>
+  );
+}

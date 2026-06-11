@@ -1,131 +1,123 @@
 import { useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { getChannelStats, getHistogramData } from '../services/api';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { getChannelStats, getHistogramData, getScatterData } from '../services/api';
 import type { FileInfo, ChannelStats } from '../types';
 
-interface Props {
-  file: FileInfo;
-}
+interface Props { file: FileInfo; }
 
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+const CH_COLORS = ['#22d3ee', '#a78bfa', '#34d399', '#fb923c', '#f472b6', '#facc15', '#38bdf8', '#c084fc'];
 
 export default function Dashboard({ file }: Props) {
   const [stats, setStats] = useState<ChannelStats[]>([]);
-  const [ampHist, setAmpHist] = useState<{ range: string; count: number }[]>([]);
+  const [ampHist, setAmpHist] = useState<{ v: string; n: number }[]>([]);
+  const [ampTime, setAmpTime] = useState<{ x: number; y: number }[]>([]);
 
   useEffect(() => {
     getChannelStats(file.file_id).then(setStats);
-    getHistogramData(file.file_id, 'amplitude', 30).then((data) => {
-      const bars = data.counts.map((c, i) => ({
-        range: `${data.edges[i].toFixed(0)}`,
-        count: c,
-      }));
-      setAmpHist(bars);
+    getHistogramData(file.file_id, 'amplitude', 30).then((d) => {
+      setAmpHist(d.counts.map((c, i) => ({ v: `${d.edges[i].toFixed(0)}`, n: c })));
+    });
+    getScatterData(file.file_id, 'time', 'amplitude').then((d) => {
+      setAmpTime(d.x.map((x, i) => ({ x: Number(x.toFixed(2)), y: d.y[i] })));
     });
   }, [file.file_id]);
 
-  const channelHits = stats.map((s) => ({
-    name: `CH${s.channel}`,
-    hits: s.hit_count,
-    avgAmp: s.avg_amplitude,
-  }));
+  const chData = stats.map((s, i) => ({ name: `CH${s.channel}`, hits: s.hit_count, color: CH_COLORS[i % CH_COLORS.length] }));
+  const totalHits = stats.reduce((a, s) => a + s.hit_count, 0);
 
   return (
-    <div className="dashboard">
-      <div className="stats-cards">
-        <div className="stat-card">
-          <div className="stat-value">{file.hit_count.toLocaleString()}</div>
-          <div className="stat-label">总事件数</div>
+    <div className="view-dashboard">
+      <div className="metrics-row">
+        <div className="metric">
+          <span className="metric-val">{file.hit_count.toLocaleString()}</span>
+          <span className="metric-key">Total Events</span>
         </div>
-        <div className="stat-card">
-          <div className="stat-value">{file.waveform_count.toLocaleString()}</div>
-          <div className="stat-label">波形数</div>
+        <div className="metric">
+          <span className="metric-val">{file.waveform_count.toLocaleString()}</span>
+          <span className="metric-key">Waveforms</span>
         </div>
-        <div className="stat-card">
-          <div className="stat-value">{file.channels.length}</div>
-          <div className="stat-label">通道数</div>
+        <div className="metric">
+          <span className="metric-val">{file.channels.length}</span>
+          <span className="metric-key">Channels</span>
         </div>
-        <div className="stat-card">
-          <div className="stat-value">{file.duration.toFixed(1)}s</div>
-          <div className="stat-label">持续时间</div>
+        <div className="metric">
+          <span className="metric-val">{file.duration.toFixed(1)}<small>s</small></span>
+          <span className="metric-key">Duration</span>
+        </div>
+        <div className="metric">
+          <span className="metric-val">{stats.length > 0 ? Math.max(...stats.map(s => s.max_amplitude)) : '-'}</span>
+          <span className="metric-key">Peak Amplitude</span>
         </div>
       </div>
 
-      <div className="dashboard-charts">
-        <div className="chart-panel">
-          <h3>各通道事件数</h3>
-          <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={channelHits}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis dataKey="name" stroke="#aaa" />
-              <YAxis stroke="#aaa" />
-              <Tooltip contentStyle={{ background: '#1e1e2e', border: '1px solid #333' }} />
-              <Bar dataKey="hits" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-
-        <div className="chart-panel">
-          <h3>通道分布</h3>
-          <ResponsiveContainer width="100%" height={250}>
-            <PieChart>
-              <Pie
-                data={channelHits}
-                dataKey="hits"
-                nameKey="name"
-                cx="50%"
-                cy="50%"
-                outerRadius={90}
-                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-              >
-                {channelHits.map((_, i) => (
-                  <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip contentStyle={{ background: '#1e1e2e', border: '1px solid #333' }} />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-
-        <div className="chart-panel full-width">
-          <h3>振幅分布</h3>
+      <div className="panel-grid-2">
+        <div className="panel">
+          <div className="panel-head">Channel Distribution</div>
           <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={ampHist}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis dataKey="range" stroke="#aaa" interval="preserveStartEnd" />
-              <YAxis stroke="#aaa" />
-              <Tooltip contentStyle={{ background: '#1e1e2e', border: '1px solid #333' }} />
-              <Bar dataKey="count" fill="#10b981" radius={[2, 2, 0, 0]} />
+            <BarChart data={chData} barSize={28}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} />
+              <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} />
+              <Tooltip contentStyle={{ background: '#0c1222', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, fontSize: 12 }} />
+              <Bar dataKey="hits" radius={[3, 3, 0, 0]}>
+                {chData.map((d, i) => <Cell key={i} fill={d.color} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+          <div className="channel-legend">
+            {stats.map((s, i) => (
+              <span key={s.channel} className="ch-tag" style={{ borderColor: CH_COLORS[i % CH_COLORS.length] }}>
+                CH{s.channel}: {s.hit_count} <small>({(s.hit_count / totalHits * 100).toFixed(0)}%)</small>
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-head">Amplitude Distribution</div>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={ampHist} barSize={6}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <XAxis dataKey="v" tick={{ fill: '#94a3b8', fontSize: 10 }} interval="preserveStartEnd" axisLine={false} />
+              <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} />
+              <Tooltip contentStyle={{ background: '#0c1222', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, fontSize: 12 }} />
+              <Bar dataKey="n" fill="#22d3ee" radius={[2, 2, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      <div className="channel-stats-table">
-        <h3>通道统计</h3>
-        <table>
+      <div className="panel full">
+        <div className="panel-head">Amplitude vs Time</div>
+        <ResponsiveContainer width="100%" height={200}>
+          <BarChart data={ampTime} barSize={1.5}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+            <XAxis dataKey="x" tick={{ fill: '#94a3b8', fontSize: 10 }} interval="preserveStartEnd" axisLine={false} label={{ value: 'Time (s)', fill: '#64748b', fontSize: 11, position: 'insideBottom', offset: -4 }} />
+            <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} label={{ value: 'Amp (dB)', fill: '#64748b', fontSize: 11, angle: -90, position: 'insideLeft' }} />
+            <Tooltip contentStyle={{ background: '#0c1222', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, fontSize: 12 }} />
+            <Bar dataKey="y" fill="#a78bfa" radius={[1, 1, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">Channel Statistics</div>
+        <table className="data-table">
           <thead>
             <tr>
-              <th>通道</th>
-              <th>事件数</th>
-              <th>平均振幅</th>
-              <th>最大振幅</th>
-              <th>平均能量</th>
-              <th>最大能量</th>
-              <th>平均持续时间</th>
-              <th>时间跨度(s)</th>
+              <th>CH</th><th>Events</th><th>Avg Amp</th><th>Max Amp</th>
+              <th>Avg Energy</th><th>Avg Duration</th><th>Span (s)</th>
             </tr>
           </thead>
           <tbody>
-            {stats.map((s) => (
+            {stats.map((s, i) => (
               <tr key={s.channel}>
-                <td>CH{s.channel}</td>
+                <td><span className="ch-dot" style={{ background: CH_COLORS[i % CH_COLORS.length] }} />CH{s.channel}</td>
                 <td>{s.hit_count}</td>
                 <td>{s.avg_amplitude.toFixed(1)}</td>
                 <td>{s.max_amplitude}</td>
                 <td>{s.avg_energy.toFixed(1)}</td>
-                <td>{s.max_energy}</td>
-                <td>{s.avg_duration.toFixed(0)} μs</td>
+                <td>{s.avg_duration.toFixed(0)} us</td>
                 <td>{s.time_span.toFixed(2)}</td>
               </tr>
             ))}

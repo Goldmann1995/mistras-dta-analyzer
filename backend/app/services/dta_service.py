@@ -1,12 +1,20 @@
 import sys
 import os
 import uuid
+import tempfile
 import numpy as np
 from scipy.fft import fft, fftfreq
 from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 from MistrasDTA import read_bin, get_waveform_data
+
+
+def _trim_pretrigger(t, V, tdly):
+    if tdly >= 0:
+        return t, V
+    trim_count = abs(int(tdly))
+    return t[trim_count:] - t[trim_count], V[trim_count:]
 
 
 _file_cache: dict[str, dict] = {}
@@ -121,13 +129,17 @@ def get_hits(
     return {'total': total, 'hits': hits}
 
 
-def get_waveform(file_id: str, index: int) -> dict:
+def get_waveform(file_id: str, index: int, keep_pretrigger: bool = False) -> dict:
     wfm = _file_cache[file_id]['wfm']
     if index >= len(wfm):
         raise IndexError(f"Waveform index {index} out of range")
 
     row = wfm[index]
     t, V = get_waveform_data(row)
+
+    pretrigger_samples = abs(int(row['TDLY'])) if row['TDLY'] < 0 else 0
+    if not keep_pretrigger:
+        t, V = _trim_pretrigger(t, V, int(row['TDLY']))
 
     step = max(1, len(t) // 5000)
     t_down = t[::step]
@@ -138,15 +150,20 @@ def get_waveform(file_id: str, index: int) -> dict:
         'time': float(row['SSSSSSSS.mmmuuun']),
         'channel': int(row['CH']),
         'sample_rate': float(row['SRATE']),
+        'pretrigger_samples': pretrigger_samples,
+        'trimmed': not keep_pretrigger and pretrigger_samples > 0,
         'time_array': t_down.tolist(),
         'voltage_array': V_down.tolist(),
     }
 
 
-def get_waveform_fft(file_id: str, index: int) -> dict:
+def get_waveform_fft(file_id: str, index: int, keep_pretrigger: bool = False) -> dict:
     wfm = _file_cache[file_id]['wfm']
     row = wfm[index]
-    _, V = get_waveform_data(row)
+    t, V = get_waveform_data(row)
+
+    if not keep_pretrigger:
+        _, V = _trim_pretrigger(t, V, int(row['TDLY']))
 
     N = len(V)
     sr = float(row['SRATE'])
@@ -289,3 +306,99 @@ def get_loaded_files() -> list[dict]:
 
 def remove_file(file_id: str):
     _file_cache.pop(file_id, None)
+
+
+def export_npz(
+    file_id: str,
+    channel: Optional[int] = None,
+    keep_pretrigger: bool = False,
+    max_waveforms: Optional[int] = None,
+    normalize: bool = False,
+    fixed_length: Optional[int] = None,
+) -> str:
+    data = _file_cache[file_id]
+    rec = data['rec']
+    wfm = data['wfm']
+
+    if len(rec) == 0 or len(wfm) == 0:
+        raise ValueError("No data to export")
+
+    mask = np.ones(len(wfm), dtype=bool)
+    if channel is not None:
+        mask &= wfm['CH'] == channel
+    wfm_filtered = wfm[mask]
+
+    rec_mask = np.ones(len(rec), dtype=bool)
+    if channel is not None:
+        rec_mask &= rec['CH'] == channel
+    rec_filtered = rec[rec_mask]
+
+    if max_waveforms and len(wfm_filtered) > max_waveforms:
+        wfm_filtered = wfm_filtered[:max_waveforms]
+
+    waveforms = []
+    meta_times = []
+    meta_channels = []
+    meta_amplitudes = []
+    meta_energies = []
+    meta_durations = []
+    meta_sample_rates = []
+
+    for row in wfm_filtered:
+        t, V = get_waveform_data(row)
+        if not keep_pretrigger:
+            t, V = _trim_pretrigger(t, V, int(row['TDLY']))
+        waveforms.append(V)
+        meta_times.append(float(row['SSSSSSSS.mmmuuun']))
+        meta_channels.append(int(row['CH']))
+        meta_sample_rates.append(float(row['SRATE']))
+
+    if 'AMP' in rec_filtered.dtype.names:
+        meta_amplitudes = rec_filtered['AMP'][:len(waveforms)].astype(float).tolist()
+    if 'ENER' in rec_filtered.dtype.names:
+        meta_energies = rec_filtered['ENER'][:len(waveforms)].astype(float).tolist()
+    if 'DURATION' in rec_filtered.dtype.names:
+        meta_durations = rec_filtered['DURATION'][:len(waveforms)].astype(float).tolist()
+
+    if fixed_length:
+        padded = []
+        for w in waveforms:
+            if len(w) >= fixed_length:
+                padded.append(w[:fixed_length])
+            else:
+                padded.append(np.pad(w, (0, fixed_length - len(w))))
+        waveform_array = np.array(padded, dtype=np.float32)
+    else:
+        target_len = max(len(w) for w in waveforms)
+        padded = [np.pad(w, (0, target_len - len(w))) if len(w) < target_len else w for w in waveforms]
+        waveform_array = np.array(padded, dtype=np.float32)
+
+    if normalize:
+        global_max = np.max(np.abs(waveform_array))
+        if global_max > 0:
+            waveform_array = waveform_array / global_max
+
+    export_dir = os.path.join(tempfile.gettempdir(), "mistras_exports")
+    os.makedirs(export_dir, exist_ok=True)
+    filename = f"{data['filename'].replace('.DTA', '').replace('.dta', '')}"
+    if channel is not None:
+        filename += f"_ch{channel}"
+    if not keep_pretrigger:
+        filename += "_trimmed"
+    if normalize:
+        filename += "_norm"
+    filename += ".npz"
+    filepath = os.path.join(export_dir, filename)
+
+    np.savez_compressed(
+        filepath,
+        waveforms=waveform_array,
+        times=np.array(meta_times, dtype=np.float64),
+        channels=np.array(meta_channels, dtype=np.int32),
+        sample_rates=np.array(meta_sample_rates, dtype=np.float64),
+        amplitudes=np.array(meta_amplitudes, dtype=np.float32) if meta_amplitudes else np.array([]),
+        energies=np.array(meta_energies, dtype=np.float32) if meta_energies else np.array([]),
+        durations=np.array(meta_durations, dtype=np.float32) if meta_durations else np.array([]),
+    )
+
+    return filepath

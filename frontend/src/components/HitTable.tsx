@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ChevronLeft, ChevronRight, ArrowUpDown } from 'lucide-react';
 import { getHits } from '../services/api';
 import type { FileInfo, HitRecord } from '../types';
 
@@ -8,23 +7,21 @@ interface Props {
   onSelectHit?: (index: number) => void;
 }
 
-const COLUMNS: { key: keyof HitRecord; label: string; sortKey: string }[] = [
+const COLS: { key: keyof HitRecord; label: string; sortKey: string; fmt?: (v: number) => string }[] = [
   { key: 'index', label: '#', sortKey: '' },
-  { key: 'time', label: '时间(s)', sortKey: 'SSSSSSSS.mmmuuun' },
-  { key: 'channel', label: '通道', sortKey: 'CH' },
-  { key: 'amplitude', label: '振幅', sortKey: 'AMP' },
-  { key: 'energy', label: '能量', sortKey: 'ENER' },
-  { key: 'duration', label: '持续(μs)', sortKey: 'DURATION' },
-  { key: 'rise', label: '上升时间', sortKey: 'RISE' },
-  { key: 'counts', label: '计数', sortKey: 'COUN' },
-  { key: 'peak_counts', label: '峰值计数', sortKey: 'PCNTS' },
-  { key: 'rms', label: 'RMS', sortKey: 'RMS' },
-  { key: 'avg_frequency', label: '平均频率', sortKey: 'A-FRQ' },
-  { key: 'peak_frequency', label: '峰值频率', sortKey: 'P-FRQ' },
-  { key: 'abs_energy', label: '绝对能量', sortKey: 'ABS-ENERGY' },
+  { key: 'time', label: 'Time (s)', sortKey: 'SSSSSSSS.mmmuuun', fmt: (v) => v.toFixed(6) },
+  { key: 'channel', label: 'CH', sortKey: 'CH' },
+  { key: 'amplitude', label: 'Amp', sortKey: 'AMP' },
+  { key: 'energy', label: 'Energy', sortKey: 'ENER' },
+  { key: 'duration', label: 'Dur (us)', sortKey: 'DURATION' },
+  { key: 'rise', label: 'Rise', sortKey: 'RISE' },
+  { key: 'counts', label: 'Counts', sortKey: 'COUN' },
+  { key: 'rms', label: 'RMS', sortKey: 'RMS', fmt: (v) => v.toFixed(4) },
+  { key: 'peak_frequency', label: 'P-FRQ', sortKey: 'P-FRQ' },
+  { key: 'abs_energy', label: 'Abs Energy', sortKey: 'ABS-ENERGY', fmt: (v) => v.toFixed(4) },
 ];
 
-const PAGE_SIZE = 50;
+const PAGE = 50;
 
 export default function HitTable({ file, onSelectHit }: Props) {
   const [hits, setHits] = useState<HitRecord[]>([]);
@@ -32,112 +29,71 @@ export default function HitTable({ file, onSelectHit }: Props) {
   const [page, setPage] = useState(0);
   const [sortBy, setSortBy] = useState<string | undefined>();
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
-  const [channelFilter, setChannelFilter] = useState<number | undefined>();
-  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const [chFilter, setChFilter] = useState<number | undefined>();
+  const [selected, setSelected] = useState<number | null>(null);
 
-  const fetchData = useCallback(async () => {
-    const res = await getHits(file.file_id, {
-      offset: page * PAGE_SIZE,
-      limit: PAGE_SIZE,
-      sort_by: sortBy,
-      sort_order: sortOrder,
-      channel: channelFilter,
+  const fetch = useCallback(async () => {
+    const r = await getHits(file.file_id, {
+      offset: page * PAGE, limit: PAGE,
+      sort_by: sortBy, sort_order: sortOrder, channel: chFilter,
     });
-    setHits(res.hits);
-    setTotal(res.total);
-  }, [file.file_id, page, sortBy, sortOrder, channelFilter]);
+    setHits(r.hits);
+    setTotal(r.total);
+  }, [file.file_id, page, sortBy, sortOrder, chFilter]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { fetch(); }, [fetch]);
 
-  const handleSort = (sortKey: string) => {
-    if (!sortKey) return;
-    if (sortBy === sortKey) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortBy(sortKey);
-      setSortOrder('asc');
-    }
+  const handleSort = (sk: string) => {
+    if (!sk) return;
+    if (sortBy === sk) setSortOrder(o => o === 'asc' ? 'desc' : 'asc');
+    else { setSortBy(sk); setSortOrder('asc'); }
     setPage(0);
   };
 
-  const totalPages = Math.ceil(total / PAGE_SIZE);
+  const pages = Math.ceil(total / PAGE);
 
   return (
-    <div className="hit-table-container">
-      <div className="table-toolbar">
-        <div className="filter-group">
-          <label>通道:</label>
-          <select
-            value={channelFilter ?? ''}
-            onChange={(e) => {
-              setChannelFilter(e.target.value ? Number(e.target.value) : undefined);
-              setPage(0);
-            }}
-          >
-            <option value="">全部</option>
-            {file.channels.map((ch) => (
-              <option key={ch} value={ch}>CH{ch}</option>
-            ))}
+    <div className="view-hits">
+      <div className="hits-toolbar">
+        <div className="toolbar-left">
+          <label className="filter-label">Channel</label>
+          <select className="filter-select" value={chFilter ?? ''} onChange={(e) => { setChFilter(e.target.value ? Number(e.target.value) : undefined); setPage(0); }}>
+            <option value="">All</option>
+            {file.channels.map(ch => <option key={ch} value={ch}>CH{ch}</option>)}
           </select>
         </div>
-        <div className="table-info">
-          共 {total.toLocaleString()} 条记录
-        </div>
+        <span className="toolbar-count">{total.toLocaleString()} records</span>
       </div>
 
-      <div className="table-scroll">
-        <table className="hit-table">
+      <div className="table-wrap">
+        <table className="data-table hit-table">
           <thead>
             <tr>
-              {COLUMNS.map(({ key, label, sortKey }) => (
-                <th
-                  key={key}
-                  onClick={() => handleSort(sortKey)}
-                  className={sortKey ? 'sortable' : ''}
-                >
+              {COLS.map(({ key, label, sortKey }) => (
+                <th key={key} onClick={() => handleSort(sortKey)} className={sortKey ? 'sortable' : ''}>
                   {label}
-                  {sortBy === sortKey && (
-                    <ArrowUpDown size={12} className={`sort-icon ${sortOrder}`} />
-                  )}
+                  {sortBy === sortKey && <span className="sort-arrow">{sortOrder === 'asc' ? ' ↑' : ' ↓'}</span>}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {hits.map((hit) => (
-              <tr
-                key={hit.index}
-                className={selectedIdx === hit.index ? 'selected' : ''}
-                onClick={() => {
-                  setSelectedIdx(hit.index);
-                  onSelectHit?.(hit.index);
-                }}
-              >
-                {COLUMNS.map(({ key }) => (
-                  <td key={key}>
-                    {key === 'time'
-                      ? (hit[key] as number)?.toFixed(6)
-                      : key === 'rms'
-                        ? (hit[key] as number)?.toFixed(4)
-                        : key === 'abs_energy'
-                          ? (hit[key] as number)?.toFixed(4)
-                          : hit[key] ?? '-'}
-                  </td>
-                ))}
+            {hits.map((h) => (
+              <tr key={h.index} className={selected === h.index ? 'selected' : ''} onClick={() => { setSelected(h.index); onSelectHit?.(h.index); }}>
+                {COLS.map(({ key, fmt }) => {
+                  const v = h[key];
+                  return <td key={key}>{v == null ? '-' : fmt ? fmt(v as number) : v}</td>;
+                })}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      <div className="table-pagination">
-        <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0}>
-          <ChevronLeft size={16} />
-        </button>
-        <span>{page + 1} / {totalPages || 1}</span>
-        <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1}>
-          <ChevronRight size={16} />
-        </button>
+      <div className="table-pager">
+        <button disabled={page === 0} onClick={() => setPage(p => p - 1)}>Prev</button>
+        <span className="pager-info">{page + 1} / {pages || 1}</span>
+        <button disabled={page >= pages - 1} onClick={() => setPage(p => p + 1)}>Next</button>
       </div>
     </div>
   );

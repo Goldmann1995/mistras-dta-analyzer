@@ -1,123 +1,88 @@
 import { useState, useEffect } from 'react';
-import {
-  ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, BarChart, Bar, ZAxis,
-} from 'recharts';
+import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, ZAxis } from 'recharts';
 import { getScatterData, getHistogramData } from '../services/api';
-import type { FileInfo, ScatterData, HistogramData } from '../types';
+import type { FileInfo } from '../types';
 
-interface Props {
-  file: FileInfo;
-}
+interface Props { file: FileInfo; }
 
-const FIELD_OPTIONS = [
-  { value: 'time', label: '时间' },
-  { value: 'amplitude', label: '振幅' },
-  { value: 'energy', label: '能量' },
-  { value: 'duration', label: '持续时间' },
-  { value: 'rise', label: '上升时间' },
-  { value: 'counts', label: '计数' },
-  { value: 'rms', label: 'RMS' },
-  { value: 'avg_frequency', label: '平均频率' },
-  { value: 'peak_frequency', label: '峰值频率' },
-  { value: 'abs_energy', label: '绝对能量' },
-  { value: 'signal_strength', label: '信号强度' },
-  { value: 'freq_centroid', label: '频率质心' },
+const FIELDS = [
+  { v: 'time', l: 'Time' }, { v: 'amplitude', l: 'Amplitude' }, { v: 'energy', l: 'Energy' },
+  { v: 'duration', l: 'Duration' }, { v: 'rise', l: 'Rise' }, { v: 'counts', l: 'Counts' },
+  { v: 'rms', l: 'RMS' }, { v: 'avg_frequency', l: 'Avg Freq' }, { v: 'peak_frequency', l: 'Peak Freq' },
+  { v: 'abs_energy', l: 'Abs Energy' }, { v: 'signal_strength', l: 'Sig Strength' }, { v: 'freq_centroid', l: 'Freq Centroid' },
 ];
 
 export default function ParametricCharts({ file }: Props) {
-  const [xField, setXField] = useState('time');
-  const [yField, setYField] = useState('amplitude');
-  const [colorField, setColorField] = useState('energy');
-  const [histField, setHistField] = useState('amplitude');
-  const [channel, setChannel] = useState<number | undefined>();
-  const [scatter, setScatter] = useState<ScatterData | null>(null);
-  const [histogram, setHistogram] = useState<HistogramData | null>(null);
+  const [xF, setXF] = useState('time');
+  const [yF, setYF] = useState('amplitude');
+  const [cF, setCF] = useState('energy');
+  const [hF, setHF] = useState('amplitude');
+  const [ch, setCh] = useState<number | undefined>();
+  const [scatter, setScatter] = useState<{ x: number; y: number; z: number }[]>([]);
+  const [hist, setHist] = useState<{ v: string; n: number }[]>([]);
 
   useEffect(() => {
-    getScatterData(file.file_id, xField, yField, colorField, channel).then(setScatter);
-  }, [file.file_id, xField, yField, colorField, channel]);
+    getScatterData(file.file_id, xF, yF, cF, ch).then(d => {
+      setScatter(d.x.map((x, i) => ({ x, y: d.y[i], z: d.color?.[i] ?? 1 })));
+    });
+  }, [file.file_id, xF, yF, cF, ch]);
 
   useEffect(() => {
-    getHistogramData(file.file_id, histField, 40, channel).then(setHistogram);
-  }, [file.file_id, histField, channel]);
+    getHistogramData(file.file_id, hF, 40, ch).then(d => {
+      setHist(d.counts.map((c, i) => ({ v: ((d.edges[i] + d.edges[i + 1]) / 2).toFixed(1), n: c })));
+    });
+  }, [file.file_id, hF, ch]);
 
-  const scatterData = scatter
-    ? scatter.x.map((x, i) => ({ x, y: scatter.y[i], z: scatter.color?.[i] ?? 1 }))
-    : [];
-
-  const histData = histogram
-    ? histogram.counts.map((c, i) => ({
-        range: ((histogram.edges[i] + histogram.edges[i + 1]) / 2).toFixed(1),
-        count: c,
-      }))
-    : [];
-
-  const fieldLabel = (v: string) => FIELD_OPTIONS.find((f) => f.value === v)?.label ?? v;
+  const fl = (v: string) => FIELDS.find(f => f.v === v)?.l ?? v;
 
   return (
-    <div className="parametric-charts">
-      <div className="chart-controls">
-        <div className="control-group">
-          <label>通道:</label>
-          <select value={channel ?? ''} onChange={(e) => setChannel(e.target.value ? Number(e.target.value) : undefined)}>
-            <option value="">全部</option>
-            {file.channels.map((ch) => <option key={ch} value={ch}>CH{ch}</option>)}
-          </select>
-        </div>
+    <div className="view-charts">
+      <div className="charts-controls">
+        <label className="filter-label">Channel</label>
+        <select className="filter-select" value={ch ?? ''} onChange={e => setCh(e.target.value ? Number(e.target.value) : undefined)}>
+          <option value="">All</option>
+          {file.channels.map(c => <option key={c} value={c}>CH{c}</option>)}
+        </select>
       </div>
 
-      <div className="charts-grid">
-        <div className="chart-panel">
-          <div className="chart-header">
-            <h3>散点图</h3>
-            <div className="chart-selectors">
-              <select value={xField} onChange={(e) => setXField(e.target.value)}>
-                {FIELD_OPTIONS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
-              </select>
+      <div className="panel-grid-2">
+        <div className="panel">
+          <div className="panel-head">
+            Scatter Plot
+            <div className="panel-selectors">
+              <select value={xF} onChange={e => setXF(e.target.value)}>{FIELDS.map(f => <option key={f.v} value={f.v}>{f.l}</option>)}</select>
               <span>vs</span>
-              <select value={yField} onChange={(e) => setYField(e.target.value)}>
-                {FIELD_OPTIONS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
-              </select>
-              <span>颜色:</span>
-              <select value={colorField} onChange={(e) => setColorField(e.target.value)}>
-                {FIELD_OPTIONS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
-              </select>
+              <select value={yF} onChange={e => setYF(e.target.value)}>{FIELDS.map(f => <option key={f.v} value={f.v}>{f.l}</option>)}</select>
+              <span>color</span>
+              <select value={cF} onChange={e => setCF(e.target.value)}>{FIELDS.map(f => <option key={f.v} value={f.v}>{f.l}</option>)}</select>
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={350}>
+          <ResponsiveContainer width="100%" height={340}>
             <ScatterChart>
-              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis dataKey="x" name={fieldLabel(xField)} stroke="#aaa" type="number" />
-              <YAxis dataKey="y" name={fieldLabel(yField)} stroke="#aaa" type="number" />
-              <ZAxis dataKey="z" range={[20, 200]} />
-              <Tooltip
-                contentStyle={{ background: '#1e1e2e', border: '1px solid #333' }}
-                formatter={(value: number) => value.toFixed(4)}
-              />
-              <Scatter data={scatterData} fill="#3b82f6" fillOpacity={0.6} />
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <XAxis dataKey="x" name={fl(xF)} tick={{ fill: '#94a3b8', fontSize: 10 }} type="number" axisLine={false} />
+              <YAxis dataKey="y" name={fl(yF)} tick={{ fill: '#94a3b8', fontSize: 10 }} type="number" axisLine={false} />
+              <ZAxis dataKey="z" range={[15, 150]} />
+              <Tooltip contentStyle={{ background: '#0c1222', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, fontSize: 11 }} formatter={(v: number) => v.toFixed(3)} />
+              <Scatter data={scatter} fill="#22d3ee" fillOpacity={0.5} />
             </ScatterChart>
           </ResponsiveContainer>
         </div>
 
-        <div className="chart-panel">
-          <div className="chart-header">
-            <h3>直方图</h3>
-            <div className="chart-selectors">
-              <select value={histField} onChange={(e) => setHistField(e.target.value)}>
-                {FIELD_OPTIONS.filter((f) => f.value !== 'time').map((f) => (
-                  <option key={f.value} value={f.value}>{f.label}</option>
-                ))}
-              </select>
+        <div className="panel">
+          <div className="panel-head">
+            Histogram
+            <div className="panel-selectors">
+              <select value={hF} onChange={e => setHF(e.target.value)}>{FIELDS.filter(f => f.v !== 'time').map(f => <option key={f.v} value={f.v}>{f.l}</option>)}</select>
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={350}>
-            <BarChart data={histData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis dataKey="range" stroke="#aaa" interval="preserveStartEnd" />
-              <YAxis stroke="#aaa" />
-              <Tooltip contentStyle={{ background: '#1e1e2e', border: '1px solid #333' }} />
-              <Bar dataKey="count" fill="#10b981" radius={[2, 2, 0, 0]} />
+          <ResponsiveContainer width="100%" height={340}>
+            <BarChart data={hist} barSize={6}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <XAxis dataKey="v" tick={{ fill: '#94a3b8', fontSize: 10 }} interval="preserveStartEnd" axisLine={false} />
+              <YAxis tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} />
+              <Tooltip contentStyle={{ background: '#0c1222', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, fontSize: 11 }} />
+              <Bar dataKey="n" fill="#a78bfa" radius={[2, 2, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>

@@ -1,7 +1,7 @@
 import axios from 'axios';
 import type {
   FileInfo, HitsResponse, WaveformData, FFTResult,
-  ChannelStats, ScatterData, HistogramData, PluginInfo,
+  ChannelStats, ScatterData, HistogramData, PluginInfo, ExportOptions,
 } from '../types';
 
 const api = axios.create({
@@ -20,36 +20,34 @@ export async function listFiles(): Promise<FileInfo[]> {
   return data;
 }
 
-export async function getFileInfo(fileId: string): Promise<FileInfo> {
-  const { data } = await api.get<FileInfo>(`/api/files/${fileId}`);
-  return data;
-}
-
 export async function getHits(
   fileId: string,
   params: {
-    channel?: number;
-    offset?: number;
-    limit?: number;
-    sort_by?: string;
-    sort_order?: string;
-    amp_min?: number;
-    amp_max?: number;
-    time_min?: number;
-    time_max?: number;
+    channel?: number; offset?: number; limit?: number;
+    sort_by?: string; sort_order?: string;
+    amp_min?: number; amp_max?: number;
+    time_min?: number; time_max?: number;
   } = {},
 ): Promise<HitsResponse> {
   const { data } = await api.get<HitsResponse>(`/api/analysis/${fileId}/hits`, { params });
   return data;
 }
 
-export async function getWaveform(fileId: string, index: number): Promise<WaveformData> {
-  const { data } = await api.get<WaveformData>(`/api/analysis/${fileId}/waveform/${index}`);
+export async function getWaveform(
+  fileId: string, index: number, keepPretrigger: boolean = false,
+): Promise<WaveformData> {
+  const { data } = await api.get<WaveformData>(
+    `/api/analysis/${fileId}/waveform/${index}`, { params: { keep_pretrigger: keepPretrigger } },
+  );
   return data;
 }
 
-export async function getWaveformFFT(fileId: string, index: number): Promise<FFTResult> {
-  const { data } = await api.get<FFTResult>(`/api/analysis/${fileId}/waveform/${index}/fft`);
+export async function getWaveformFFT(
+  fileId: string, index: number, keepPretrigger: boolean = false,
+): Promise<FFTResult> {
+  const { data } = await api.get<FFTResult>(
+    `/api/analysis/${fileId}/waveform/${index}/fft`, { params: { keep_pretrigger: keepPretrigger } },
+  );
   return data;
 }
 
@@ -59,9 +57,7 @@ export async function getChannelStats(fileId: string): Promise<ChannelStats[]> {
 }
 
 export async function getScatterData(
-  fileId: string,
-  x: string, y: string,
-  color?: string, channel?: number,
+  fileId: string, x: string, y: string, color?: string, channel?: number,
 ): Promise<ScatterData> {
   const { data } = await api.get<ScatterData>(`/api/analysis/${fileId}/scatter`, {
     params: { x, y, color, channel },
@@ -81,4 +77,15 @@ export async function getHistogramData(
 export async function getPlugins(): Promise<PluginInfo[]> {
   const { data } = await api.get<PluginInfo[]>('/api/plugins/');
   return data;
+}
+
+export function getExportUrl(fileId: string, opts: ExportOptions): string {
+  const base = api.defaults.baseURL || '';
+  const params = new URLSearchParams();
+  if (opts.channel !== undefined) params.set('channel', String(opts.channel));
+  params.set('keep_pretrigger', String(opts.keep_pretrigger));
+  params.set('normalize', String(opts.normalize));
+  if (opts.fixed_length) params.set('fixed_length', String(opts.fixed_length));
+  if (opts.max_waveforms) params.set('max_waveforms', String(opts.max_waveforms));
+  return `${base}/api/analysis/${fileId}/export/npz?${params.toString()}`;
 }

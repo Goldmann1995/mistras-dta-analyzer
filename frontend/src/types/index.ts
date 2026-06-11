@@ -41,6 +41,8 @@ export interface WaveformData {
   time: number;
   channel: number;
   sample_rate: number;
+  pretrigger_samples: number;
+  trimmed: boolean;
   time_array: number[];
   voltage_array: number[];
 }
@@ -86,4 +88,12 @@ export interface PluginInfo {
   version: string;
   description: string;
   endpoints: string[];
+}
+
+export interface ExportOptions {
+  channel?: number;
+  keep_pretrigger: boolean;
+  normalize: boolean;
+  fixed_length?: number;
+  max_waveforms?: number;
 }

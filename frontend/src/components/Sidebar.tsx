@@ -1,7 +1,6 @@
-import { FileText, BarChart3, Activity, Table2, Layers, Plug } from 'lucide-react';
 import type { FileInfo } from '../types';
 
-export type ViewType = 'dashboard' | 'hits' | 'waveform' | 'charts' | 'channels' | 'plugins';
+export type ViewType = 'dashboard' | 'hits' | 'waveform' | 'charts' | 'channels' | 'export' | 'plugins';
 
 interface Props {
   activeFile: FileInfo | null;
@@ -9,48 +8,60 @@ interface Props {
   onViewChange: (view: ViewType) => void;
 }
 
-const navItems: { view: ViewType; label: string; icon: React.ReactNode }[] = [
-  { view: 'dashboard', label: '总览', icon: <BarChart3 size={18} /> },
-  { view: 'hits', label: '事件表', icon: <Table2 size={18} /> },
-  { view: 'waveform', label: '波形', icon: <Activity size={18} /> },
-  { view: 'charts', label: '参数图', icon: <Layers size={18} /> },
-  { view: 'channels', label: '通道', icon: <BarChart3 size={18} /> },
-  { view: 'plugins', label: '插件', icon: <Plug size={18} /> },
+const navItems: { view: ViewType; label: string; code: string }[] = [
+  { view: 'dashboard', label: 'Overview', code: 'OVR' },
+  { view: 'hits', label: 'Event Log', code: 'EVT' },
+  { view: 'waveform', label: 'Waveform', code: 'WFM' },
+  { view: 'charts', label: 'Analysis', code: 'ANL' },
+  { view: 'channels', label: 'Channels', code: 'CHN' },
+  { view: 'export', label: 'Export', code: 'EXP' },
+  { view: 'plugins', label: 'Plugins', code: 'PLG' },
 ];
 
 export default function Sidebar({ activeFile, activeView, onViewChange }: Props) {
   return (
     <aside className="sidebar">
-      <div className="sidebar-header">
-        <Activity size={22} />
-        <span>Mistras DTA</span>
+      <div className="sidebar-brand">
+        <div className="brand-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polyline points="2,12 6,8 10,16 14,4 18,14 22,10" />
+          </svg>
+        </div>
+        <div className="brand-text">
+          <span className="brand-name">MISTRAS</span>
+          <span className="brand-sub">DTA Analyzer</span>
+        </div>
       </div>
 
       {activeFile && (
-        <div className="sidebar-file-info">
-          <FileText size={14} />
-          <div>
-            <div className="file-name">{activeFile.filename}</div>
-            <div className="file-meta">
-              {activeFile.hit_count} hits · {activeFile.channels.length} ch
-            </div>
+        <div className="sidebar-file">
+          <div className="file-indicator" />
+          <div className="file-details">
+            <span className="file-label">{activeFile.filename}</span>
+            <span className="file-stats">
+              {activeFile.hit_count.toLocaleString()} events · {activeFile.channels.length} ch · {activeFile.duration.toFixed(0)}s
+            </span>
           </div>
         </div>
       )}
 
       <nav className="sidebar-nav">
-        {navItems.map(({ view, label, icon }) => (
+        {navItems.map(({ view, label, code }) => (
           <button
             key={view}
-            className={`nav-item ${activeView === view ? 'active' : ''}`}
+            className={`nav-btn ${activeView === view ? 'active' : ''}`}
             onClick={() => onViewChange(view)}
             disabled={!activeFile && view !== 'dashboard'}
           >
-            {icon}
-            <span>{label}</span>
+            <span className="nav-code">{code}</span>
+            <span className="nav-label">{label}</span>
           </button>
         ))}
       </nav>
+
+      <div className="sidebar-footer">
+        <span>v1.0.0</span>
+      </div>
     </aside>
   );
 }

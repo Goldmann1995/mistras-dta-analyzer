@@ -1,20 +1,20 @@
 import { useState, useCallback } from 'react';
-import { Upload, FileText, X } from 'lucide-react';
 import { uploadFile } from '../services/api';
 import type { FileInfo } from '../types';
 
 interface Props {
   onFileLoaded: (file: FileInfo) => void;
+  compact?: boolean;
 }
 
-export default function FileUpload({ onFileLoaded }: Props) {
+export default function FileUpload({ onFileLoaded, compact }: Props) {
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleFile = useCallback(async (file: File) => {
     if (!file.name.toLowerCase().endsWith('.dta')) {
-      setError('请选择 .DTA 文件');
+      setError('Only .DTA files accepted');
       return;
     }
     setLoading(true);
@@ -23,7 +23,7 @@ export default function FileUpload({ onFileLoaded }: Props) {
       const info = await uploadFile(file);
       onFileLoaded(info);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '上传失败');
+      setError(e instanceof Error ? e.message : 'Upload failed');
     } finally {
       setLoading(false);
     }
@@ -36,35 +36,46 @@ export default function FileUpload({ onFileLoaded }: Props) {
     if (file) handleFile(file);
   }, [handleFile]);
 
+  if (compact) {
+    return (
+      <label className="upload-compact">
+        <input
+          type="file" accept=".dta,.DTA" style={{ display: 'none' }}
+          onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+        />
+        {loading ? <span className="loading-dot" /> : <span>Load file</span>}
+      </label>
+    );
+  }
+
   return (
     <div
-      className={`file-upload ${dragging ? 'dragging' : ''}`}
+      className={`upload-zone ${dragging ? 'dragging' : ''}`}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
     >
       <input
-        type="file"
-        accept=".dta,.DTA"
+        type="file" accept=".dta,.DTA" id="file-input" style={{ display: 'none' }}
         onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
-        id="file-input"
-        style={{ display: 'none' }}
       />
-      <label htmlFor="file-input" className="upload-label">
+      <label htmlFor="file-input" className="upload-content">
         {loading ? (
-          <div className="upload-spinner">解析中...</div>
+          <div className="upload-loading">
+            <div className="loading-bar" />
+            <span>Parsing binary data...</span>
+          </div>
         ) : (
           <>
-            <Upload size={32} />
-            <span>拖放 DTA 文件到此处，或点击选择</span>
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" opacity={0.5}>
+              <polyline points="2,12 6,8 10,16 14,4 18,14 22,10" />
+            </svg>
+            <span className="upload-title">Drop .DTA file here</span>
+            <span className="upload-hint">or click to browse</span>
           </>
         )}
       </label>
-      {error && (
-        <div className="upload-error">
-          <X size={14} /> {error}
-        </div>
-      )}
+      {error && <div className="upload-error">{error}</div>}
     </div>
   );
 }
