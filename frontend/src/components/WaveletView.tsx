@@ -118,7 +118,7 @@ function SpectrogramCanvas({ cwt }: { cwt: CWTResult }) {
 
   }, [cwt]);
 
-  return <canvas ref={canvasRef} width={700} height={320} style={{ width: '100%', height: 320, borderRadius: 4 }} />;
+  return <canvas ref={canvasRef} width={1200} height={500} style={{ width: '100%', height: 500, borderRadius: 4 }} />;
 }
 
 export default function WaveletView({ file }: Props) {
@@ -224,11 +224,11 @@ export default function WaveletView({ file }: Props) {
           {wf && (
             <div className="panel">
               <div className="panel-head">Waveform #{index}</div>
-              <ResponsiveContainer width="100%" height={140}>
+              <ResponsiveContainer width="100%" height={180}>
                 <LineChart data={wfData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-                  <XAxis dataKey="t" tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} />
-                  <YAxis tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} />
+                  <XAxis dataKey="t" tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} label={{ value: 'Time (μs)', fill: '#64748b', fontSize: 11, position: 'insideBottom', offset: -4 }} />
+                  <YAxis tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} label={{ value: 'Voltage', fill: '#64748b', fontSize: 11, angle: -90, position: 'insideLeft' }} />
                   <Line type="monotone" dataKey="v" stroke="#22d3ee" dot={false} strokeWidth={1} />
                 </LineChart>
               </ResponsiveContainer>
