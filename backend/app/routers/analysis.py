@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from ..services import dta_service
 from ..services.signal_analysis import (
     compute_cwt, compute_group_velocity_dispersion, compute_cross_channel_velocity,
+    compute_emd,
 )
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -102,6 +103,31 @@ async def get_dispersion(
             wfm[index], wavelet=wavelet,
             freq_min=freq_min, freq_max=freq_max,
             num_freqs=num_freqs, keep_pretrigger=keep_pretrigger,
+        )
+    except KeyError:
+        raise HTTPException(404, "File not found")
+    except IndexError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/{file_id}/waveform/{index}/emd")
+async def get_emd(
+    file_id: str,
+    index: int,
+    method: str = "emd",
+    max_imfs: int = 8,
+    keep_pretrigger: bool = False,
+):
+    try:
+        cache = dta_service._file_cache[file_id]
+        wfm = cache['wfm']
+        if index >= len(wfm):
+            raise IndexError(f"Waveform index {index} out of range")
+        return compute_emd(
+            wfm[index], method=method, max_imfs=max_imfs,
+            keep_pretrigger=keep_pretrigger,
         )
     except KeyError:
         raise HTTPException(404, "File not found")

@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ScatterChart, Scatter, BarChart, Bar, Cell, ZAxis,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, ScatterChart, Scatter, BarChart, Bar, ZAxis,
 } from 'recharts';
-import { getCWT, getDispersion, getGroupVelocity, getWaveform } from '../services/api';
-import type { FileInfo, CWTResult, DispersionResult, GroupVelocityResult, WaveformData } from '../types';
+import { getCWT, getDispersion, getGroupVelocity, getWaveform, getEMD } from '../services/api';
+import type { FileInfo, CWTResult, DispersionResult, GroupVelocityResult, WaveformData, EMDResult } from '../types';
 
 interface Props { file: FileInfo; }
 
@@ -40,21 +40,26 @@ function SpectrogramCanvas({ cwt }: { cwt: CWTResult }) {
     const canvas = canvasRef.current;
     if (!canvas || !cwt) return;
 
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth;
+    const cssH = 500;
+    canvas.width = cssW * dpr;
+    canvas.height = cssH * dpr;
+
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    ctx.scale(dpr, dpr);
 
     const nFreqs = cwt.power.length;
     const nTimes = cwt.power[0]?.length ?? 0;
     if (nFreqs === 0 || nTimes === 0) return;
 
-    const w = canvas.width;
-    const h = canvas.height;
-    const margin = { top: 10, right: 10, bottom: 40, left: 60 };
-    const plotW = w - margin.left - margin.right;
-    const plotH = h - margin.top - margin.bottom;
+    const margin = { top: 16, right: 20, bottom: 56, left: 80 };
+    const plotW = cssW - margin.left - margin.right;
+    const plotH = cssH - margin.top - margin.bottom;
 
     ctx.fillStyle = '#060a13';
-    ctx.fillRect(0, 0, w, h);
+    ctx.fillRect(0, 0, cssW, cssH);
 
     const imgData = ctx.createImageData(nTimes, nFreqs);
     for (let fi = 0; fi < nFreqs; fi++) {
@@ -80,46 +85,68 @@ function SpectrogramCanvas({ cwt }: { cwt: CWTResult }) {
       ctx.drawImage(offscreen, margin.left, margin.top, plotW, plotH);
     }
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+    ctx.lineWidth = 1;
     ctx.strokeRect(margin.left, margin.top, plotW, plotH);
 
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '10px "IBM Plex Mono", monospace';
+    // X-axis tick labels
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '13px "IBM Plex Mono", monospace';
     ctx.textAlign = 'center';
     const tAxis = cwt.time_axis;
-    for (let i = 0; i <= 5; i++) {
-      const ti = Math.floor(i / 5 * (tAxis.length - 1));
-      const x = margin.left + (i / 5) * plotW;
-      ctx.fillText(`${tAxis[ti].toFixed(0)}`, x, h - margin.bottom + 14);
+    for (let i = 0; i <= 6; i++) {
+      const ti = Math.floor(i / 6 * (tAxis.length - 1));
+      const x = margin.left + (i / 6) * plotW;
+      ctx.fillText(`${tAxis[ti].toFixed(0)}`, x, cssH - margin.bottom + 18);
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.beginPath(); ctx.moveTo(x, margin.top); ctx.lineTo(x, margin.top + plotH); ctx.stroke();
     }
-    ctx.fillText('Time (μs)', margin.left + plotW / 2, h - 5);
+    // X-axis label
+    ctx.fillStyle = '#22d3ee';
+    ctx.font = 'bold 14px "Inter", sans-serif';
+    ctx.fillText('Time (μs)', margin.left + plotW / 2, cssH - 6);
 
+    // Y-axis tick labels
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '13px "IBM Plex Mono", monospace';
     ctx.textAlign = 'right';
     const fAxis = cwt.freq_axis;
-    for (let i = 0; i <= 5; i++) {
-      const fi = Math.floor(i / 5 * (fAxis.length - 1));
-      const y = margin.top + plotH - (i / 5) * plotH;
-      ctx.fillText(`${(fAxis[fi] / 1000).toFixed(1)}`, margin.left - 6, y + 3);
+    for (let i = 0; i <= 6; i++) {
+      const fi = Math.floor(i / 6 * (fAxis.length - 1));
+      const y = margin.top + plotH - (i / 6) * plotH;
+      ctx.fillText(`${(fAxis[fi] / 1000).toFixed(0)}`, margin.left - 8, y + 4);
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.beginPath(); ctx.moveTo(margin.left, y); ctx.lineTo(margin.left + plotW, y); ctx.stroke();
     }
+    // Y-axis label
     ctx.save();
-    ctx.translate(12, margin.top + plotH / 2);
+    ctx.fillStyle = '#22d3ee';
+    ctx.font = 'bold 14px "Inter", sans-serif';
+    ctx.translate(16, margin.top + plotH / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = 'center';
-    ctx.fillText('Freq (kHz)', 0, 0);
+    ctx.fillText('Frequency (kHz)', 0, 0);
     ctx.restore();
 
+    // Peak marker
     const pkX = margin.left + ((cwt.peak_time - tAxis[0]) / (tAxis[tAxis.length - 1] - tAxis[0])) * plotW;
     const pkY = margin.top + plotH - ((cwt.peak_frequency - fAxis[0]) / (fAxis[fAxis.length - 1] - fAxis[0])) * plotH;
     ctx.strokeStyle = '#22d3ee';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(pkX, pkY, 6, 0, Math.PI * 2);
+    ctx.arc(pkX, pkY, 8, 0, Math.PI * 2);
     ctx.stroke();
+    ctx.fillStyle = '#22d3ee';
+    ctx.font = 'bold 12px "IBM Plex Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${(cwt.peak_frequency / 1000).toFixed(1)} kHz`, pkX + 12, pkY + 4);
 
   }, [cwt]);
 
-  return <canvas ref={canvasRef} width={1200} height={500} style={{ width: '100%', height: 500, borderRadius: 4 }} />;
+  return <canvas ref={canvasRef} style={{ width: '100%', height: 500, borderRadius: 6 }} />;
 }
+
+const IMF_COLORS = ['#22d3ee', '#a78bfa', '#34d399', '#fb923c', '#f87171', '#fbbf24', '#818cf8', '#f472b6'];
 
 export default function WaveletView({ file }: Props) {
   const [index, setIndex] = useState(0);
@@ -130,9 +157,11 @@ export default function WaveletView({ file }: Props) {
   const [disp, setDisp] = useState<DispersionResult | null>(null);
   const [wf, setWf] = useState<WaveformData | null>(null);
   const [gv, setGv] = useState<GroupVelocityResult | null>(null);
+  const [emd, setEmd] = useState<EMDResult | null>(null);
+  const [emdMethod, setEmdMethod] = useState('emd');
   const [sensorDist, setSensorDist] = useState(0.3);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<'cwt' | 'velocity'>('cwt');
+  const [tab, setTab] = useState<'cwt' | 'emd' | 'velocity'>('cwt');
 
   const loadCWT = useCallback(async () => {
     if (file.waveform_count === 0) return;
@@ -156,12 +185,22 @@ export default function WaveletView({ file }: Props) {
   const loadGV = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await getGroupVelocity(file.file_id, sensorDist, keepPre);
-      setGv(r);
+      setGv(await getGroupVelocity(file.file_id, sensorDist, keepPre));
     } finally {
       setLoading(false);
     }
   }, [file.file_id, sensorDist, keepPre]);
+
+  const loadEMD = useCallback(async () => {
+    setLoading(true);
+    try {
+      setEmd(await getEMD(file.file_id, index, { method: emdMethod, keep_pretrigger: keepPre }));
+    } finally {
+      setLoading(false);
+    }
+  }, [file.file_id, index, emdMethod, keepPre]);
+
+  useEffect(() => { if (tab === 'emd') loadEMD(); }, [tab, loadEMD]);
 
   if (file.waveform_count === 0) return <div className="empty-state">No waveform data</div>;
 
@@ -180,6 +219,7 @@ export default function WaveletView({ file }: Props) {
     <div className="view-wavelet">
       <div className="wavelet-tabs">
         <button className={`ctrl-btn ${tab === 'cwt' ? 'active' : ''}`} onClick={() => setTab('cwt')}>Wavelet Transform</button>
+        <button className={`ctrl-btn ${tab === 'emd' ? 'active' : ''}`} onClick={() => setTab('emd')}>EMD</button>
         <button className={`ctrl-btn ${tab === 'velocity' ? 'active' : ''}`} onClick={() => { setTab('velocity'); if (!gv) loadGV(); }}>Group Velocity</button>
       </div>
 
@@ -273,6 +313,102 @@ export default function WaveletView({ file }: Props) {
                 </ResponsiveContainer>
               </div>
             </div>
+          )}
+        </>
+      )}
+
+      {tab === 'emd' && (
+        <>
+          <div className="wf-controls">
+            <div className="ctrl-group">
+              <label>Index</label>
+              <input type="number" min={0} max={file.waveform_count - 1} value={index} onChange={e => setIndex(Number(e.target.value))} />
+              <span className="ctrl-hint">/ {file.waveform_count - 1}</span>
+            </div>
+            <div className="ctrl-group">
+              <label>Method</label>
+              <select className="filter-select" value={emdMethod} onChange={e => setEmdMethod(e.target.value)}>
+                <option value="emd">EMD</option>
+                <option value="eemd">EEMD</option>
+              </select>
+            </div>
+            <label className="ctrl-toggle">
+              <input type="checkbox" checked={keepPre} onChange={e => setKeepPre(e.target.checked)} />
+              <span>Pre-trigger</span>
+            </label>
+            <button className="ctrl-btn" onClick={loadEMD}>Compute</button>
+          </div>
+
+          {loading && <div className="loading-indicator">Computing EMD decomposition...</div>}
+
+          {emd && (
+            <>
+              <div className="wf-meta">
+                <span>CH{emd.channel}</span>
+                <span>Method: {emd.method.toUpperCase()}</span>
+                <span>{emd.num_imfs} IMFs</span>
+                <span>{emd.sample_rate / 1000} kHz SR</span>
+              </div>
+
+              <div className="panel">
+                <div className="panel-head">IMF Energy Distribution</div>
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart data={emd.imfs.map(m => ({
+                    name: `IMF ${m.index + 1}`,
+                    energy: Number((m.energy_ratio * 100).toFixed(1)),
+                    freq: Number((m.dominant_frequency / 1000).toFixed(1)),
+                  }))} barSize={24}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                    <XAxis dataKey="name" tick={{ fill: '#e2e8f0', fontSize: 11 }} axisLine={false} />
+                    <YAxis tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} label={{ value: 'Energy %', fill: '#64748b', fontSize: 11, angle: -90, position: 'insideLeft' }} />
+                    <Tooltip
+                      contentStyle={{ background: '#0c1222', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, fontSize: 11 }}
+                      formatter={(v: number, name: string) => name === 'energy' ? [`${v}%`, 'Energy'] : [`${v} kHz`, 'Dom. Freq']}
+                    />
+                    <Bar dataKey="energy" radius={[4, 4, 0, 0]}>
+                      {emd.imfs.map((_, i) => <Cell key={i} fill={IMF_COLORS[i % IMF_COLORS.length]} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              {emd.imfs.map((imf, idx) => {
+                const imfData = imf.data.map((v, i) => ({
+                  t: Number(emd.time_axis[i]?.toFixed(1) ?? 0),
+                  v,
+                  freq: imf.inst_frequency[i] ? Number((imf.inst_frequency[i] / 1000).toFixed(1)) : 0,
+                }));
+                const color = IMF_COLORS[idx % IMF_COLORS.length];
+                return (
+                  <div key={idx} className="panel">
+                    <div className="panel-head">
+                      IMF {imf.index + 1}
+                      <span className="panel-tag">
+                        {(imf.dominant_frequency / 1000).toFixed(1)} kHz · {(imf.energy_ratio * 100).toFixed(1)}% energy
+                      </span>
+                    </div>
+                    <div className="panel-grid-2" style={{ marginBottom: 0 }}>
+                      <ResponsiveContainer width="100%" height={160}>
+                        <LineChart data={imfData}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                          <XAxis dataKey="t" tick={{ fill: '#94a3b8', fontSize: 9 }} axisLine={false} label={{ value: 'Time (μs)', fill: '#64748b', fontSize: 10, position: 'insideBottom', offset: -4 }} />
+                          <YAxis tick={{ fill: '#94a3b8', fontSize: 9 }} axisLine={false} />
+                          <Line type="monotone" dataKey="v" stroke={color} dot={false} strokeWidth={1} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                      <ResponsiveContainer width="100%" height={160}>
+                        <LineChart data={imfData}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                          <XAxis dataKey="t" tick={{ fill: '#94a3b8', fontSize: 9 }} axisLine={false} label={{ value: 'Time (μs)', fill: '#64748b', fontSize: 10, position: 'insideBottom', offset: -4 }} />
+                          <YAxis tick={{ fill: '#94a3b8', fontSize: 9 }} axisLine={false} label={{ value: 'Freq (kHz)', fill: '#64748b', fontSize: 10, angle: -90, position: 'insideLeft' }} />
+                          <Line type="monotone" dataKey="freq" stroke={color} dot={false} strokeWidth={1} strokeOpacity={0.6} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
           )}
         </>
       )}

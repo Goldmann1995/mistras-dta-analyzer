@@ -2,7 +2,7 @@ import axios from 'axios';
 import type {
   FileInfo, HitsResponse, WaveformData, FFTResult,
   ChannelStats, ScatterData, HistogramData, PluginInfo, ExportOptions,
-  CWTResult, DispersionResult, GroupVelocityResult,
+  CWTResult, DispersionResult, GroupVelocityResult, EMDResult,
 } from '../types';
 
 const api = axios.create({
@@ -88,6 +88,14 @@ export async function getDispersion(
   opts: { wavelet?: string; freq_min?: number; freq_max?: number; num_freqs?: number; keep_pretrigger?: boolean } = {},
 ): Promise<DispersionResult> {
   const { data } = await api.get<DispersionResult>(`/api/analysis/${fileId}/waveform/${index}/dispersion`, { params: opts });
+  return data;
+}
+
+export async function getEMD(
+  fileId: string, index: number,
+  opts: { method?: string; max_imfs?: number; keep_pretrigger?: boolean } = {},
+): Promise<EMDResult> {
+  const { data } = await api.get<EMDResult>(`/api/analysis/${fileId}/waveform/${index}/emd`, { params: opts });
   return data;
 }
 

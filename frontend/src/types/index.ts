@@ -129,6 +129,25 @@ export interface GroupVelocityResult {
   pairs: VelocityPair[];
 }
 
+export interface IMFData {
+  index: number;
+  data: number[];
+  inst_amplitude: number[];
+  inst_frequency: number[];
+  dominant_frequency: number;
+  energy: number;
+  energy_ratio: number;
+}
+
+export interface EMDResult {
+  time_axis: number[];
+  num_imfs: number;
+  imfs: IMFData[];
+  method: string;
+  channel: number;
+  sample_rate: number;
+}
+
 export interface ExportOptions {
   channel?: number;
   keep_pretrigger: boolean;

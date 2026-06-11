@@ -1,5 +1,6 @@
 import numpy as np
 import pywt
+from PyEMD import EMD, EEMD
 from scipy.signal import hilbert
 from scipy.fft import fft, fftfreq
 from typing import Optional
@@ -177,4 +178,73 @@ def compute_cross_channel_velocity(
         'channel_count': len(channels),
         'channels': channels,
         'pairs': pairs,
+    }
+
+
+def compute_emd(
+    wfm_row,
+    method: str = 'emd',
+    max_imfs: int = 8,
+    keep_pretrigger: bool = False,
+) -> dict:
+    t, V = get_waveform_data(wfm_row)
+    sr = float(wfm_row['SRATE'])
+
+    if not keep_pretrigger and wfm_row['TDLY'] < 0:
+        trim = abs(int(wfm_row['TDLY']))
+        t = t[trim:] - t[trim]
+        V = V[trim:]
+
+    if method == 'eemd':
+        decomposer = EEMD()
+        decomposer.eemd(V)
+        imfs = decomposer.get_imfs_and_residue()[0]
+    else:
+        decomposer = EMD()
+        imfs = decomposer.emd(V)
+
+    if len(imfs) > max_imfs:
+        imfs = imfs[:max_imfs]
+
+    max_points = 2000
+    step = max(1, len(t) // max_points)
+    t_down = t[::step]
+
+    imf_list = []
+    for i, imf in enumerate(imfs):
+        imf_down = imf[::step]
+        analytic = hilbert(imf)
+        inst_amp = np.abs(analytic)
+        inst_phase = np.unwrap(np.angle(analytic))
+        inst_freq = np.diff(inst_phase) / (2 * np.pi / sr)
+        inst_freq = np.append(inst_freq, inst_freq[-1])
+        inst_freq = np.clip(inst_freq, 0, sr / 2)
+
+        freq_spectrum = np.abs(fft(imf))[:len(imf) // 2]
+        freq_axis = fftfreq(len(imf), 1.0 / sr)[:len(imf) // 2]
+        dominant_freq = float(freq_axis[np.argmax(freq_spectrum)]) if len(freq_spectrum) > 0 else 0.0
+        energy = float(np.sum(imf ** 2))
+
+        imf_list.append({
+            'index': i,
+            'data': imf_down.tolist(),
+            'inst_amplitude': inst_amp[::step].tolist(),
+            'inst_frequency': inst_freq[::step].tolist(),
+            'dominant_frequency': dominant_freq,
+            'energy': energy,
+            'energy_ratio': 0.0,
+        })
+
+    total_energy = sum(m['energy'] for m in imf_list)
+    if total_energy > 0:
+        for m in imf_list:
+            m['energy_ratio'] = m['energy'] / total_energy
+
+    return {
+        'time_axis': t_down.tolist(),
+        'num_imfs': len(imf_list),
+        'imfs': imf_list,
+        'method': method,
+        'channel': int(wfm_row['CH']),
+        'sample_rate': sr,
     }
