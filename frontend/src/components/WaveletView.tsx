@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, ScatterChart, Scatter, BarChart, Bar, ZAxis,
+  ResponsiveContainer, ScatterChart, Scatter, BarChart, Bar, Cell, ZAxis,
 } from 'recharts';
 import { getCWT, getDispersion, getGroupVelocity, getWaveform, getEMD } from '../services/api';
 import type { FileInfo, CWTResult, DispersionResult, GroupVelocityResult, WaveformData, EMDResult } from '../types';
