@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mistras-dta-backend"
+version = "1.0.0"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.104.0",
+  "uvicorn[standard]>=0.24.0",
+  "numpy>=1.24.0",
+  "python-multipart>=0.0.6",
+  "scipy>=1.11.0",
+  "pydantic>=2.0.0",
+  "PyWavelets>=1.4.0",
+  "MistrasDTA",
+]
+description = "Backend server for Mistras DTA Analyzer"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
