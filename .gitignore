@@ -100,6 +100,54 @@ ipython_config.py
 #   commonly ignored for libraries.
 # uv.lock
 
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Project specific - Data files
+*.DTA
+*.dta
+data/
+*.csv
+*.xlsx
+*.xls
+
+# Project specific - Output files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+*.npz
+output/
+results/
+figures/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*backup*
+# uv.lock
+
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
