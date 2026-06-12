@@ -1,12 +1,83 @@
 import numpy as np
 import pywt
 from PyEMD import EMD, EEMD
-from scipy.signal import hilbert
+from scipy.signal import hilbert, butter, sosfilt, sosfiltfilt
 from scipy.fft import fft, fftfreq
-from scipy.optimize import brentq
+from scipy.optimize import brentq, minimize
 from typing import Optional
 
 from MistrasDTA import get_waveform_data
+
+
+def apply_filter(
+    wfm_row,
+    filter_type: str = 'bandpass',
+    freq_low: Optional[float] = None,
+    freq_high: Optional[float] = None,
+    order: int = 4,
+    keep_pretrigger: bool = False,
+) -> dict:
+    t, V = get_waveform_data(wfm_row)
+    sr = float(wfm_row['SRATE'])
+
+    if not keep_pretrigger and wfm_row['TDLY'] < 0:
+        trim = abs(int(wfm_row['TDLY']))
+        t = t[trim:] - t[trim]
+        V = V[trim:]
+
+    nyq = sr / 2.0
+    V_original = V.copy()
+
+    if filter_type == 'bandpass':
+        if freq_low is None or freq_high is None:
+            raise ValueError("bandpass requires freq_low and freq_high")
+        sos = butter(order, [freq_low / nyq, freq_high / nyq], btype='bandpass', output='sos')
+    elif filter_type == 'lowpass':
+        if freq_high is None:
+            raise ValueError("lowpass requires freq_high")
+        sos = butter(order, freq_high / nyq, btype='low', output='sos')
+    elif filter_type == 'highpass':
+        if freq_low is None:
+            raise ValueError("highpass requires freq_low")
+        sos = butter(order, freq_low / nyq, btype='high', output='sos')
+    else:
+        raise ValueError(f"Unknown filter type: {filter_type}")
+
+    V_filtered = sosfiltfilt(sos, V).astype(np.float64)
+
+    step = max(1, len(t) // 5000)
+    t_down = t[::step]
+    V_orig_down = V_original[::step]
+    V_filt_down = V_filtered[::step]
+
+    N = len(V_filtered)
+    yf_orig = fft(V_original)
+    yf_filt = fft(V_filtered)
+    xf = fftfreq(N, 1.0 / sr)
+    pos = xf > 0
+    freqs = xf[pos]
+    mag_orig = (2.0 / N * np.abs(yf_orig[pos]))
+    mag_filt = (2.0 / N * np.abs(yf_filt[pos]))
+
+    f_step = max(1, len(freqs) // 2000)
+    freqs_down = freqs[::f_step]
+    mag_orig_down = mag_orig[::f_step]
+    mag_filt_down = mag_filt[::f_step]
+
+    return {
+        'time_array': t_down.tolist(),
+        'original': V_orig_down.tolist(),
+        'filtered': V_filt_down.tolist(),
+        'fft_frequencies': freqs_down.tolist(),
+        'fft_original': mag_orig_down.tolist(),
+        'fft_filtered': mag_filt_down.tolist(),
+        'filter_type': filter_type,
+        'freq_low': freq_low,
+        'freq_high': freq_high,
+        'order': order,
+        'channel': int(wfm_row['CH']),
+        'sample_rate': sr,
+    }
 
 
 def compute_cwt(
@@ -392,4 +463,115 @@ def compute_lamb_dispersion(
         'ct': ct,
         'freq_range': [freq_min, freq_max],
         'modes': modes,
+    }
+
+
+def compute_source_locations(
+    rec_data,
+    sensor_positions: dict[int, list[float]],
+    velocity: float = 5400.0,
+    time_window: float = 0.001,
+) -> dict:
+    """Locate AE sources using TDOA with least-squares minimization.
+
+    Groups hits within time_window into events, then for events with >= 3
+    channel arrivals, solves for the source position that minimizes the
+    residual of (measured_dt - predicted_dt) across all sensor pairs.
+    """
+    channels = sorted(sensor_positions.keys())
+    if len(channels) < 2:
+        return {'events': [], 'sensor_positions': sensor_positions}
+
+    time_field = 'SSSSSSSS.mmmuuun'
+    ch_hits: dict[int, list] = {ch: [] for ch in channels}
+    for i, row in enumerate(rec_data):
+        ch = int(row['CH'])
+        if ch in ch_hits:
+            ch_hits[ch].append({
+                'index': i,
+                'time': float(row[time_field]),
+                'amplitude': float(row['AMP']) if 'AMP' in rec_data.dtype.names else 0,
+                'energy': float(row['ENER']) if 'ENER' in rec_data.dtype.names else 0,
+            })
+
+    events = []
+    used = set()
+    all_hits = []
+    for ch in channels:
+        for h in ch_hits[ch]:
+            all_hits.append((h['time'], ch, h))
+    all_hits.sort()
+
+    i = 0
+    while i < len(all_hits):
+        t0 = all_hits[i][0]
+        group: dict[int, dict] = {}
+        j = i
+        while j < len(all_hits) and all_hits[j][0] - t0 <= time_window:
+            ch = all_hits[j][1]
+            hit = all_hits[j][2]
+            hid = (ch, hit['index'])
+            if ch not in group and hid not in used:
+                group[ch] = hit
+                used.add(hid)
+            j += 1
+        i = j if j > i else i + 1
+
+        if len(group) < 2:
+            continue
+
+        event_chs = sorted(group.keys())
+        arrivals = {ch: group[ch]['time'] for ch in event_chs}
+        first_ch = min(arrivals, key=lambda c: arrivals[c])
+        avg_amp = np.mean([group[c]['amplitude'] for c in event_chs])
+        avg_energy = np.mean([group[c]['energy'] for c in event_chs])
+        event_time = arrivals[first_ch]
+
+        location = None
+        if len(event_chs) >= 2:
+            pos = np.array([sensor_positions[ch] for ch in event_chs])
+            t_arr = np.array([arrivals[ch] for ch in event_chs])
+            t_rel = t_arr - t_arr.min()
+
+            x0 = np.mean(pos, axis=0)
+
+            if len(event_chs) == 2:
+                dt = t_rel[1] - t_rel[0]
+                d = dt * velocity
+                mid = (pos[0] + pos[1]) / 2
+                direction = pos[1] - pos[0]
+                length = np.linalg.norm(direction)
+                if length > 0:
+                    direction = direction / length
+                    location = (mid - direction * d / 2).tolist()
+            else:
+                def residual(src):
+                    dists = np.sqrt(np.sum((pos - src) ** 2, axis=1))
+                    predicted_t = dists / velocity
+                    predicted_dt = predicted_t - predicted_t.min()
+                    return np.sum((predicted_dt - t_rel) ** 2)
+
+                opt = minimize(residual, x0, method='Nelder-Mead',
+                               options={'xatol': 1e-5, 'fatol': 1e-12, 'maxiter': 500})
+                if opt.success or opt.fun < 1e-6:
+                    location = opt.x.tolist()
+
+        events.append({
+            'time': event_time,
+            'channels': event_chs,
+            'arrivals': arrivals,
+            'amplitude': float(avg_amp),
+            'energy': float(avg_energy),
+            'location': location,
+            'num_channels': len(event_chs),
+        })
+
+    located = [e for e in events if e['location'] is not None]
+
+    return {
+        'total_events': len(events),
+        'located_events': len(located),
+        'events': events,
+        'sensor_positions': {str(k): v for k, v in sensor_positions.items()},
+        'velocity': velocity,
     }

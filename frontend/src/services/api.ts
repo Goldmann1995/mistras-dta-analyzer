@@ -3,6 +3,7 @@ import type {
   FileInfo, HitsResponse, WaveformData, FFTResult,
   ChannelStats, ScatterData, HistogramData, PluginInfo, ExportOptions,
   CWTResult, DispersionResult, GroupVelocityResult, EMDResult, LambDispersionResult,
+  SourceLocationResult, FilterResult,
 } from '../types';
 
 const api = axios.create({
@@ -115,18 +116,41 @@ export async function getGroupVelocity(
   return data;
 }
 
+export async function getSourceLocation(
+  fileId: string,
+  positions: Record<string, number[]>,
+  velocity: number = 5400,
+  timeWindow: number = 0.001,
+): Promise<SourceLocationResult> {
+  const { data } = await api.post<SourceLocationResult>(`/api/analysis/${fileId}/source-location`, {
+    positions, velocity, time_window: timeWindow,
+  });
+  return data;
+}
+
 export async function getPlugins(): Promise<PluginInfo[]> {
   const { data } = await api.get<PluginInfo[]>('/api/plugins/');
   return data;
 }
 
+export async function getFilteredWaveform(
+  fileId: string, index: number,
+  opts: { filter_type?: string; freq_low?: number; freq_high?: number; order?: number; keep_pretrigger?: boolean } = {},
+): Promise<FilterResult> {
+  const { data } = await api.get<FilterResult>(`/api/analysis/${fileId}/waveform/${index}/filter`, { params: opts });
+  return data;
+}
+
 export function getExportUrl(fileId: string, opts: ExportOptions): string {
   const base = api.defaults.baseURL || '';
+  const format = opts.format || 'npz';
   const params = new URLSearchParams();
   if (opts.channel !== undefined) params.set('channel', String(opts.channel));
-  params.set('keep_pretrigger', String(opts.keep_pretrigger));
-  params.set('normalize', String(opts.normalize));
-  if (opts.fixed_length) params.set('fixed_length', String(opts.fixed_length));
-  if (opts.max_waveforms) params.set('max_waveforms', String(opts.max_waveforms));
-  return `${base}/api/analysis/${fileId}/export/npz?${params.toString()}`;
+  if (format !== 'csv') {
+    params.set('keep_pretrigger', String(opts.keep_pretrigger));
+    params.set('normalize', String(opts.normalize));
+    if (opts.fixed_length) params.set('fixed_length', String(opts.fixed_length));
+    if (opts.max_waveforms) params.set('max_waveforms', String(opts.max_waveforms));
+  }
+  return `${base}/api/analysis/${fileId}/export/${format}?${params.toString()}`;
 }

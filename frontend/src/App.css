@@ -313,6 +313,19 @@ th.sortable:hover { color: var(--text-2); }
 }
 .export-btn:hover { opacity: 0.85; }
 
+.export-format-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.format-btn {
+  flex: 1; min-width: 160px; padding: 12px 16px; border-radius: 6px;
+  background: var(--bg-1); border: 1px solid var(--border);
+  cursor: pointer; text-align: left; transition: all 0.15s;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.format-btn:hover { border-color: var(--text-3); }
+.format-btn.active { border-color: var(--cyan); background: rgba(34,211,238,0.06); }
+.format-label { font-family: var(--font-data); font-size: 13px; font-weight: 600; color: var(--text-1); }
+.format-btn.active .format-label { color: var(--cyan); }
+.format-desc { font-size: 11px; color: var(--text-3); }
+
 /* ===== Plugin ===== */
 .view-plugins { max-width: 700px; }
 .view-plugins h2 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }

@@ -167,10 +167,44 @@ export interface LambDispersionResult {
   };
 }
 
+export interface SourceEvent {
+  time: number;
+  channels: number[];
+  arrivals: Record<number, number>;
+  amplitude: number;
+  energy: number;
+  location: number[] | null;
+  num_channels: number;
+}
+
+export interface SourceLocationResult {
+  total_events: number;
+  located_events: number;
+  events: SourceEvent[];
+  sensor_positions: Record<string, number[]>;
+  velocity: number;
+}
+
 export interface ExportOptions {
   channel?: number;
   keep_pretrigger: boolean;
   normalize: boolean;
   fixed_length?: number;
   max_waveforms?: number;
+  format?: 'npz' | 'mat' | 'csv';
+}
+
+export interface FilterResult {
+  time_array: number[];
+  original: number[];
+  filtered: number[];
+  fft_frequencies: number[];
+  fft_original: number[];
+  fft_filtered: number[];
+  filter_type: string;
+  freq_low: number | null;
+  freq_high: number | null;
+  order: number;
+  channel: number;
+  sample_rate: number;
 }
