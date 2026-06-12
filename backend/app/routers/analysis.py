@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from ..services import dta_service
 from ..services.signal_analysis import (
     compute_cwt, compute_group_velocity_dispersion, compute_cross_channel_velocity,
-    compute_emd,
+    compute_emd, compute_lamb_dispersion,
 )
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -133,6 +133,26 @@ async def get_emd(
         raise HTTPException(404, "File not found")
     except IndexError as e:
         raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/lamb-dispersion")
+async def get_lamb_dispersion(
+    thickness: float = Query(..., description="Plate thickness in meters"),
+    cl: float = Query(6320, description="Longitudinal wave speed in m/s"),
+    ct: float = Query(3130, description="Transverse wave speed in m/s"),
+    freq_min: float = 1000,
+    freq_max: float = 1000000,
+    num_points: int = 200,
+    max_modes: int = 4,
+):
+    try:
+        return compute_lamb_dispersion(
+            thickness=thickness, cl=cl, ct=ct,
+            freq_min=freq_min, freq_max=freq_max,
+            num_points=num_points, max_modes=max_modes,
+        )
     except Exception as e:
         raise HTTPException(400, str(e))
 

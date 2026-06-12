@@ -148,6 +148,24 @@ export interface EMDResult {
   sample_rate: number;
 }
 
+export interface LambMode {
+  mode: string;
+  frequencies: number[];
+  phase_velocity: number[];
+  group_velocity: number[];
+}
+
+export interface LambDispersionResult {
+  thickness: number;
+  cl: number;
+  ct: number;
+  freq_range: [number, number];
+  modes: {
+    symmetric: LambMode[];
+    antisymmetric: LambMode[];
+  };
+}
+
 export interface ExportOptions {
   channel?: number;
   keep_pretrigger: boolean;
