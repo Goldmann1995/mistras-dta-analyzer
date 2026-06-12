@@ -3,6 +3,7 @@ import type {
   FileInfo, HitsResponse, WaveformData, FFTResult,
   ChannelStats, ScatterData, HistogramData, PluginInfo, ExportOptions,
   CWTResult, DispersionResult, GroupVelocityResult, EMDResult, LambDispersionResult,
+  SourceLocationResult,
 } from '../types';
 
 const api = axios.create({
@@ -111,6 +112,18 @@ export async function getGroupVelocity(
 ): Promise<GroupVelocityResult> {
   const { data } = await api.get<GroupVelocityResult>(`/api/analysis/${fileId}/group-velocity`, {
     params: { sensor_distance: sensorDistance, keep_pretrigger: keepPretrigger },
+  });
+  return data;
+}
+
+export async function getSourceLocation(
+  fileId: string,
+  positions: Record<string, number[]>,
+  velocity: number = 5400,
+  timeWindow: number = 0.001,
+): Promise<SourceLocationResult> {
+  const { data } = await api.post<SourceLocationResult>(`/api/analysis/${fileId}/source-location`, {
+    positions, velocity, time_window: timeWindow,
   });
   return data;
 }

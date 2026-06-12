@@ -10,6 +10,7 @@ import ChannelView from './components/ChannelView';
 import ExportPanel from './components/ExportPanel';
 import PluginPanel from './components/PluginPanel';
 import WaveletView from './components/WaveletView';
+import SensorView from './components/SensorView';
 import type { FileInfo } from './types';
 import './App.css';
 
@@ -43,6 +44,7 @@ function App() {
       case 'wavelet': return <WaveletView file={file} />;
       case 'charts': return <ParametricCharts file={file} />;
       case 'channels': return <ChannelView file={file} />;
+      case 'sensor': return <SensorView file={file} />;
       case 'export': return <ExportPanel file={file} />;
       case 'plugins': return <PluginPanel />;
     }

@@ -167,6 +167,24 @@ export interface LambDispersionResult {
   };
 }
 
+export interface SourceEvent {
+  time: number;
+  channels: number[];
+  arrivals: Record<number, number>;
+  amplitude: number;
+  energy: number;
+  location: number[] | null;
+  num_channels: number;
+}
+
+export interface SourceLocationResult {
+  total_events: number;
+  located_events: number;
+  events: SourceEvent[];
+  sensor_positions: Record<string, number[]>;
+  velocity: number;
+}
+
 export interface ExportOptions {
   channel?: number;
   keep_pretrigger: boolean;

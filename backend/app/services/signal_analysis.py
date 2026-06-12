@@ -3,7 +3,7 @@ import pywt
 from PyEMD import EMD, EEMD
 from scipy.signal import hilbert
 from scipy.fft import fft, fftfreq
-from scipy.optimize import brentq
+from scipy.optimize import brentq, minimize
 from typing import Optional
 
 from MistrasDTA import get_waveform_data
@@ -392,4 +392,115 @@ def compute_lamb_dispersion(
         'ct': ct,
         'freq_range': [freq_min, freq_max],
         'modes': modes,
+    }
+
+
+def compute_source_locations(
+    rec_data,
+    sensor_positions: dict[int, list[float]],
+    velocity: float = 5400.0,
+    time_window: float = 0.001,
+) -> dict:
+    """Locate AE sources using TDOA with least-squares minimization.
+
+    Groups hits within time_window into events, then for events with >= 3
+    channel arrivals, solves for the source position that minimizes the
+    residual of (measured_dt - predicted_dt) across all sensor pairs.
+    """
+    channels = sorted(sensor_positions.keys())
+    if len(channels) < 2:
+        return {'events': [], 'sensor_positions': sensor_positions}
+
+    time_field = 'SSSSSSSS.mmmuuun'
+    ch_hits: dict[int, list] = {ch: [] for ch in channels}
+    for i, row in enumerate(rec_data):
+        ch = int(row['CH'])
+        if ch in ch_hits:
+            ch_hits[ch].append({
+                'index': i,
+                'time': float(row[time_field]),
+                'amplitude': float(row['AMP']) if 'AMP' in rec_data.dtype.names else 0,
+                'energy': float(row['ENER']) if 'ENER' in rec_data.dtype.names else 0,
+            })
+
+    events = []
+    used = set()
+    all_hits = []
+    for ch in channels:
+        for h in ch_hits[ch]:
+            all_hits.append((h['time'], ch, h))
+    all_hits.sort()
+
+    i = 0
+    while i < len(all_hits):
+        t0 = all_hits[i][0]
+        group: dict[int, dict] = {}
+        j = i
+        while j < len(all_hits) and all_hits[j][0] - t0 <= time_window:
+            ch = all_hits[j][1]
+            hit = all_hits[j][2]
+            hid = (ch, hit['index'])
+            if ch not in group and hid not in used:
+                group[ch] = hit
+                used.add(hid)
+            j += 1
+        i = j if j > i else i + 1
+
+        if len(group) < 2:
+            continue
+
+        event_chs = sorted(group.keys())
+        arrivals = {ch: group[ch]['time'] for ch in event_chs}
+        first_ch = min(arrivals, key=lambda c: arrivals[c])
+        avg_amp = np.mean([group[c]['amplitude'] for c in event_chs])
+        avg_energy = np.mean([group[c]['energy'] for c in event_chs])
+        event_time = arrivals[first_ch]
+
+        location = None
+        if len(event_chs) >= 2:
+            pos = np.array([sensor_positions[ch] for ch in event_chs])
+            t_arr = np.array([arrivals[ch] for ch in event_chs])
+            t_rel = t_arr - t_arr.min()
+
+            x0 = np.mean(pos, axis=0)
+
+            if len(event_chs) == 2:
+                dt = t_rel[1] - t_rel[0]
+                d = dt * velocity
+                mid = (pos[0] + pos[1]) / 2
+                direction = pos[1] - pos[0]
+                length = np.linalg.norm(direction)
+                if length > 0:
+                    direction = direction / length
+                    location = (mid - direction * d / 2).tolist()
+            else:
+                def residual(src):
+                    dists = np.sqrt(np.sum((pos - src) ** 2, axis=1))
+                    predicted_t = dists / velocity
+                    predicted_dt = predicted_t - predicted_t.min()
+                    return np.sum((predicted_dt - t_rel) ** 2)
+
+                opt = minimize(residual, x0, method='Nelder-Mead',
+                               options={'xatol': 1e-5, 'fatol': 1e-12, 'maxiter': 500})
+                if opt.success or opt.fun < 1e-6:
+                    location = opt.x.tolist()
+
+        events.append({
+            'time': event_time,
+            'channels': event_chs,
+            'arrivals': arrivals,
+            'amplitude': float(avg_amp),
+            'energy': float(avg_energy),
+            'location': location,
+            'num_channels': len(event_chs),
+        })
+
+    located = [e for e in events if e['location'] is not None]
+
+    return {
+        'total_events': len(events),
+        'located_events': len(located),
+        'events': events,
+        'sensor_positions': {str(k): v for k, v in sensor_positions.items()},
+        'velocity': velocity,
     }
