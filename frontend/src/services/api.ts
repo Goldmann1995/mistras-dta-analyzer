@@ -2,7 +2,7 @@ import axios from 'axios';
 import type {
   FileInfo, HitsResponse, WaveformData, FFTResult,
   ChannelStats, ScatterData, HistogramData, PluginInfo, ExportOptions,
-  CWTResult, DispersionResult, GroupVelocityResult, EMDResult,
+  CWTResult, DispersionResult, GroupVelocityResult, EMDResult, LambDispersionResult,
 } from '../types';
 
 const api = axios.create({
@@ -96,6 +96,13 @@ export async function getEMD(
   opts: { method?: string; max_imfs?: number; keep_pretrigger?: boolean } = {},
 ): Promise<EMDResult> {
   const { data } = await api.get<EMDResult>(`/api/analysis/${fileId}/waveform/${index}/emd`, { params: opts });
+  return data;
+}
+
+export async function getLambDispersion(
+  opts: { thickness: number; cl?: number; ct?: number; freq_min?: number; freq_max?: number; num_points?: number; max_modes?: number },
+): Promise<LambDispersionResult> {
+  const { data } = await api.get<LambDispersionResult>('/api/analysis/lamb-dispersion', { params: opts });
   return data;
 }
 

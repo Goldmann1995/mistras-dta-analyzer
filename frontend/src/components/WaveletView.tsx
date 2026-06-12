@@ -3,8 +3,8 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, ScatterChart, Scatter, BarChart, Bar, Cell, ZAxis,
 } from 'recharts';
-import { getCWT, getDispersion, getGroupVelocity, getWaveform, getEMD } from '../services/api';
-import type { FileInfo, CWTResult, DispersionResult, GroupVelocityResult, WaveformData, EMDResult } from '../types';
+import { getCWT, getDispersion, getGroupVelocity, getWaveform, getEMD, getLambDispersion } from '../services/api';
+import type { FileInfo, CWTResult, DispersionResult, GroupVelocityResult, WaveformData, EMDResult, LambDispersionResult } from '../types';
 
 interface Props { file: FileInfo; }
 
@@ -161,7 +161,11 @@ export default function WaveletView({ file }: Props) {
   const [emdMethod, setEmdMethod] = useState('emd');
   const [sensorDist, setSensorDist] = useState(0.3);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<'cwt' | 'emd' | 'velocity'>('cwt');
+  const [lamb, setLamb] = useState<LambDispersionResult | null>(null);
+  const [plateThickness, setPlateThickness] = useState(0.002);
+  const [plateCl, setPlateCl] = useState(6320);
+  const [plateCt, setPlateCt] = useState(3130);
+  const [tab, setTab] = useState<'cwt' | 'emd' | 'lamb' | 'velocity'>('cwt');
 
   const loadCWT = useCallback(async () => {
     if (file.waveform_count === 0) return;
@@ -190,6 +194,18 @@ export default function WaveletView({ file }: Props) {
       setLoading(false);
     }
   }, [file.file_id, sensorDist, keepPre]);
+
+  const loadLamb = useCallback(async () => {
+    setLoading(true);
+    try {
+      setLamb(await getLambDispersion({
+        thickness: plateThickness, cl: plateCl, ct: plateCt,
+        freq_max: (cwt?.sample_rate ?? 1000000) / 2,
+      }));
+    } finally {
+      setLoading(false);
+    }
+  }, [plateThickness, plateCl, plateCt, cwt?.sample_rate]);
 
   const loadEMD = useCallback(async () => {
     setLoading(true);
@@ -220,6 +236,7 @@ export default function WaveletView({ file }: Props) {
       <div className="wavelet-tabs">
         <button className={`ctrl-btn ${tab === 'cwt' ? 'active' : ''}`} onClick={() => setTab('cwt')}>Wavelet Transform</button>
         <button className={`ctrl-btn ${tab === 'emd' ? 'active' : ''}`} onClick={() => setTab('emd')}>EMD</button>
+        <button className={`ctrl-btn ${tab === 'lamb' ? 'active' : ''}`} onClick={() => { setTab('lamb'); if (!lamb) loadLamb(); }}>Lamb Wave</button>
         <button className={`ctrl-btn ${tab === 'velocity' ? 'active' : ''}`} onClick={() => { setTab('velocity'); if (!gv) loadGV(); }}>Group Velocity</button>
       </div>
 
@@ -408,6 +425,150 @@ export default function WaveletView({ file }: Props) {
                   </div>
                 );
               })}
+            </>
+          )}
+        </>
+      )}
+
+      {tab === 'lamb' && (
+        <>
+          <div className="wf-controls">
+            <div className="ctrl-group">
+              <label>Thickness (mm)</label>
+              <input type="number" min={0.1} step={0.1} value={plateThickness * 1000}
+                onChange={e => setPlateThickness(Number(e.target.value) / 1000)} style={{ width: 70 }} />
+            </div>
+            <div className="ctrl-group">
+              <label>c<sub>L</sub> (m/s)</label>
+              <input type="number" min={1000} step={100} value={plateCl}
+                onChange={e => setPlateCl(Number(e.target.value))} style={{ width: 80 }} />
+            </div>
+            <div className="ctrl-group">
+              <label>c<sub>T</sub> (m/s)</label>
+              <input type="number" min={500} step={100} value={plateCt}
+                onChange={e => setPlateCt(Number(e.target.value))} style={{ width: 80 }} />
+            </div>
+            <div className="ctrl-group">
+              <label>Material</label>
+              <select className="filter-select" onChange={e => {
+                const presets: Record<string, [number, number, number]> = {
+                  aluminum: [0.002, 6320, 3130],
+                  steel: [0.002, 5960, 3260],
+                  copper: [0.002, 4760, 2325],
+                  glass: [0.002, 5640, 3280],
+                };
+                const p = presets[e.target.value];
+                if (p) { setPlateThickness(p[0]); setPlateCl(p[1]); setPlateCt(p[2]); }
+              }}>
+                <option value="">Custom</option>
+                <option value="aluminum">Aluminum</option>
+                <option value="steel">Steel</option>
+                <option value="copper">Copper</option>
+                <option value="glass">Glass</option>
+              </select>
+            </div>
+            <button className="ctrl-btn" onClick={loadLamb}>Compute</button>
+          </div>
+
+          {loading && <div className="loading-indicator">Computing Lamb wave dispersion...</div>}
+
+          {lamb && (
+            <>
+              <div className="wf-meta">
+                <span>Thickness: {(lamb.thickness * 1000).toFixed(1)} mm</span>
+                <span>c<sub>L</sub>: {lamb.cl} m/s</span>
+                <span>c<sub>T</sub>: {lamb.ct} m/s</span>
+                <span>S modes: {lamb.modes.symmetric.length}</span>
+                <span>A modes: {lamb.modes.antisymmetric.length}</span>
+              </div>
+
+              <div className="panel-grid-2">
+                <div className="panel">
+                  <div className="panel-head">Phase Velocity Dispersion</div>
+                  <ResponsiveContainer width="100%" height={360}>
+                    <LineChart>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                      <XAxis
+                        dataKey="freq" type="number"
+                        domain={[lamb.freq_range[0] / 1000, lamb.freq_range[1] / 1000]}
+                        tick={{ fill: '#e2e8f0', fontSize: 11 }} axisLine={false}
+                        label={{ value: 'Frequency (kHz)', fill: '#22d3ee', fontSize: 12, fontWeight: 600, position: 'insideBottom', offset: -4 }}
+                      />
+                      <YAxis
+                        tick={{ fill: '#e2e8f0', fontSize: 11 }} axisLine={false}
+                        label={{ value: 'Phase Velocity (m/s)', fill: '#22d3ee', fontSize: 12, fontWeight: 600, angle: -90, position: 'insideLeft' }}
+                      />
+                      <Tooltip contentStyle={{ background: '#0c1222', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, fontSize: 11 }} />
+                      <Legend />
+                      {lamb.modes.symmetric.map((m, i) => (
+                        <Line key={m.mode} data={m.frequencies.map((f, j) => ({ freq: f / 1000, vp: m.phase_velocity[j] }))}
+                          dataKey="vp" name={m.mode} stroke={['#22d3ee', '#34d399', '#a78bfa', '#fbbf24'][i % 4]}
+                          dot={false} strokeWidth={2} strokeDasharray={undefined} />
+                      ))}
+                      {lamb.modes.antisymmetric.map((m, i) => (
+                        <Line key={m.mode} data={m.frequencies.map((f, j) => ({ freq: f / 1000, vp: m.phase_velocity[j] }))}
+                          dataKey="vp" name={m.mode} stroke={['#fb923c', '#f87171', '#f472b6', '#818cf8'][i % 4]}
+                          dot={false} strokeWidth={2} strokeDasharray="6 3" />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="panel">
+                  <div className="panel-head">Group Velocity Dispersion</div>
+                  <ResponsiveContainer width="100%" height={360}>
+                    <LineChart>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                      <XAxis
+                        dataKey="freq" type="number"
+                        domain={[lamb.freq_range[0] / 1000, lamb.freq_range[1] / 1000]}
+                        tick={{ fill: '#e2e8f0', fontSize: 11 }} axisLine={false}
+                        label={{ value: 'Frequency (kHz)', fill: '#22d3ee', fontSize: 12, fontWeight: 600, position: 'insideBottom', offset: -4 }}
+                      />
+                      <YAxis
+                        tick={{ fill: '#e2e8f0', fontSize: 11 }} axisLine={false}
+                        label={{ value: 'Group Velocity (m/s)', fill: '#22d3ee', fontSize: 12, fontWeight: 600, angle: -90, position: 'insideLeft' }}
+                      />
+                      <Tooltip contentStyle={{ background: '#0c1222', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, fontSize: 11 }} />
+                      <Legend />
+                      {lamb.modes.symmetric.map((m, i) => m.group_velocity.length > 0 && (
+                        <Line key={m.mode} data={m.frequencies.map((f, j) => ({ freq: f / 1000, vg: m.group_velocity[j] }))}
+                          dataKey="vg" name={m.mode} stroke={['#22d3ee', '#34d399', '#a78bfa', '#fbbf24'][i % 4]}
+                          dot={false} strokeWidth={2} />
+                      ))}
+                      {lamb.modes.antisymmetric.map((m, i) => m.group_velocity.length > 0 && (
+                        <Line key={m.mode} data={m.frequencies.map((f, j) => ({ freq: f / 1000, vg: m.group_velocity[j] }))}
+                          dataKey="vg" name={m.mode} stroke={['#fb923c', '#f87171', '#f472b6', '#818cf8'][i % 4]}
+                          dot={false} strokeWidth={2} strokeDasharray="6 3" />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="panel">
+                <div className="panel-head">Mode Summary</div>
+                <table className="hit-table">
+                  <thead><tr>
+                    <th>Mode</th><th>Type</th><th>Freq Range (kHz)</th>
+                    <th>Phase Vel (m/s)</th><th>Group Vel (m/s)</th>
+                  </tr></thead>
+                  <tbody>
+                    {[...lamb.modes.symmetric, ...lamb.modes.antisymmetric].map(m => {
+                      const gv = m.group_velocity.filter(v => v > 0);
+                      return (
+                        <tr key={m.mode}>
+                          <td style={{ fontWeight: 600, color: m.mode.startsWith('S') ? '#22d3ee' : '#fb923c' }}>{m.mode}</td>
+                          <td>{m.mode.startsWith('S') ? 'Symmetric' : 'Antisymmetric'}</td>
+                          <td>{(m.frequencies[0]/1000).toFixed(0)} - {(m.frequencies[m.frequencies.length-1]/1000).toFixed(0)}</td>
+                          <td>{Math.min(...m.phase_velocity).toFixed(0)} - {Math.max(...m.phase_velocity).toFixed(0)}</td>
+                          <td>{gv.length ? `${Math.min(...gv).toFixed(0)} - ${Math.max(...gv).toFixed(0)}` : '-'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </>
           )}
         </>

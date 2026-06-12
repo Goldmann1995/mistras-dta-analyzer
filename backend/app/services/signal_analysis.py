@@ -3,6 +3,7 @@ import pywt
 from PyEMD import EMD, EEMD
 from scipy.signal import hilbert
 from scipy.fft import fft, fftfreq
+from scipy.optimize import brentq
 from typing import Optional
 
 from MistrasDTA import get_waveform_data
@@ -247,4 +248,148 @@ def compute_emd(
         'method': method,
         'channel': int(wfm_row['CH']),
         'sample_rate': sr,
+    }
+
+
+def _lamb_det_vec(omega, vp_arr, cl, ct, h, mode='S'):
+    """Rayleigh-Lamb frequency equation (Giurgiutiu form), element-wise.
+
+    D_S = (2k²-kT²)²·cos(αh)·sin(βh) + 4k²αβ·sin(αh)·cos(βh) = 0
+    D_A = 4k²αβ·cos(αh)·sin(βh) + (2k²-kT²)²·sin(αh)·cos(βh) = 0
+
+    Split into three velocity regimes using real arithmetic only,
+    extracting the real or imaginary part of the complex determinant
+    depending on which is non-trivial in each regime.
+    """
+    k = omega / vp_arr
+    k2 = k ** 2
+    kL2 = (omega / cl) ** 2
+    kT2 = (omega / ct) ** 2
+    a2 = kL2 - k2
+    b2 = kT2 - k2
+    bracket = (2 * k2 - kT2) ** 2
+
+    result = np.zeros_like(vp_arr, dtype=float)
+
+    r1 = (a2 >= 0) & (b2 >= 0)
+    r2 = (a2 < 0) & (b2 >= 0)
+    r3 = (a2 < 0) & (b2 < 0)
+
+    # Regime 1: vp > cL, both α,β real → determinant is real
+    if np.any(r1):
+        a = np.sqrt(a2[r1]); b = np.sqrt(b2[r1])
+        ca, sa = np.cos(a * h), np.sin(a * h)
+        cb, sb = np.cos(b * h), np.sin(b * h)
+        br = bracket[r1]; kk = k2[r1]
+        if mode == 'S':
+            result[r1] = br * ca * sb + 4 * kk * a * b * sa * cb
+        else:
+            result[r1] = 4 * kk * a * b * ca * sb + br * sa * cb
+
+    # Regime 2: cT < vp < cL, α imaginary, β real
+    #   S determinant is real; A determinant is imaginary (extract imag part)
+    if np.any(r2):
+        ap = np.sqrt(-a2[r2]); b = np.sqrt(b2[r2])
+        cha, sha = np.cosh(ap * h), np.sinh(ap * h)
+        cb, sb = np.cos(b * h), np.sin(b * h)
+        br = bracket[r2]; kk = k2[r2]
+        if mode == 'S':
+            result[r2] = br * cha * sb - 4 * kk * ap * b * sha * cb
+        else:
+            result[r2] = br * sha * cb + 4 * kk * ap * b * cha * sb
+
+    # Regime 3: vp < cT, both α,β imaginary → determinant is imaginary
+    if np.any(r3):
+        ap = np.sqrt(-a2[r3]); bp = np.sqrt(-b2[r3])
+        cha, sha = np.cosh(ap * h), np.sinh(ap * h)
+        chb, shb = np.cosh(bp * h), np.sinh(bp * h)
+        br = bracket[r3]; kk = k2[r3]
+        if mode == 'S':
+            result[r3] = br * cha * shb - 4 * kk * ap * bp * sha * chb
+        else:
+            result[r3] = br * sha * chb - 4 * kk * ap * bp * cha * shb
+
+    return result
+
+
+def compute_lamb_dispersion(
+    thickness: float,
+    cl: float,
+    ct: float,
+    freq_min: float = 1000,
+    freq_max: float = 500000,
+    num_points: int = 200,
+    max_modes: int = 4,
+) -> dict:
+    h = thickness / 2.0
+    freqs = np.linspace(freq_min, freq_max, num_points)
+    vp_arr = np.concatenate([
+        np.linspace(50.0, ct, 2000),
+        np.linspace(ct * 1.001, cl * 3.0, 2000),
+    ])
+
+    modes = {'symmetric': [], 'antisymmetric': []}
+
+    for mode_type, label in [('S', 'symmetric'), ('A', 'antisymmetric')]:
+        all_mode_freqs: list[list[float]] = [[] for _ in range(max_modes)]
+        all_mode_vp: list[list[float]] = [[] for _ in range(max_modes)]
+
+        for freq in freqs:
+            if freq <= 0:
+                continue
+            omega = 2 * np.pi * freq
+
+            det_vals = _lamb_det_vec(omega, vp_arr, cl, ct, h, mode_type)
+            raw_sc = np.where(np.diff(np.sign(det_vals)))[0]
+
+            sign_changes = []
+            for sc in raw_sc:
+                vp_mid = (vp_arr[sc] + vp_arr[sc + 1]) / 2
+                if abs(vp_mid - cl) < cl * 0.02 or abs(vp_mid - ct) < ct * 0.02:
+                    continue
+                if abs(det_vals[sc]) > 1e15 or abs(det_vals[sc + 1]) > 1e15:
+                    continue
+                sign_changes.append(sc)
+
+            for mode_n in range(min(max_modes, len(sign_changes))):
+                sc = sign_changes[mode_n]
+                vp_low, vp_high = vp_arr[sc], vp_arr[sc + 1]
+                try:
+                    vp_root = brentq(
+                        lambda vp: float(np.real(
+                            _lamb_det_vec(omega, np.array([vp]), cl, ct, h, mode_type)[0]
+                        )),
+                        float(vp_low), float(vp_high), xtol=0.1
+                    )
+                    all_mode_freqs[mode_n].append(float(freq))
+                    all_mode_vp[mode_n].append(float(vp_root))
+                except Exception:
+                    pass
+
+        for mode_n in range(max_modes):
+            m_freqs = all_mode_freqs[mode_n]
+            m_phase_vel = all_mode_vp[mode_n]
+            m_group_vel: list[float] = []
+
+            if len(m_freqs) > 2:
+                m_omega = np.array(m_freqs) * 2 * np.pi
+                m_k = m_omega / np.array(m_phase_vel)
+                m_gv = np.gradient(m_omega) / (np.gradient(m_k) + 1e-30)
+                m_gv = np.clip(m_gv, 0, cl * 2)
+                m_group_vel = m_gv.tolist()
+
+            if m_freqs:
+                modes[label].append({
+                    'mode': f'{mode_type}{mode_n}',
+                    'frequencies': m_freqs,
+                    'phase_velocity': m_phase_vel,
+                    'group_velocity': m_group_vel,
+                })
+
+    return {
+        'thickness': thickness,
+        'cl': cl,
+        'ct': ct,
+        'freq_range': [freq_min, freq_max],
+        'modes': modes,
     }
