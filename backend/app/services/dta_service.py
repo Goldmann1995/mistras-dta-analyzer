@@ -250,9 +250,12 @@ def get_scatter_data(
     step = max(1, len(filtered) // max_points)
     sampled = filtered[::step]
 
+    indices = np.where(mask)[0][::step]
+
     result = {
         'x': [float(v) for v in sampled[xf]],
         'y': [float(v) for v in sampled[yf]],
+        'indices': [int(v) for v in indices],
         'color': None,
         'x_field': x_field,
         'y_field': y_field,

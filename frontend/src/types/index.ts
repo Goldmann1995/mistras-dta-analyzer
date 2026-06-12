@@ -71,6 +71,7 @@ export interface ChannelStats {
 export interface ScatterData {
   x: number[];
   y: number[];
+  indices: number[];
   color?: number[];
   x_field: string;
   y_field: string;
