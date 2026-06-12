@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from ..services import dta_service
 from ..services.signal_analysis import (
     compute_cwt, compute_group_velocity_dispersion, compute_cross_channel_velocity,
-    compute_emd, compute_lamb_dispersion, compute_source_locations,
+    compute_emd, compute_lamb_dispersion, compute_source_locations, apply_filter,
 )
 
 
@@ -239,6 +239,32 @@ async def get_histogram(
         raise HTTPException(400, str(e))
 
 
+@router.get("/{file_id}/waveform/{index}/filter")
+async def get_filtered_waveform(
+    file_id: str,
+    index: int,
+    filter_type: str = "bandpass",
+    freq_low: Optional[float] = None,
+    freq_high: Optional[float] = None,
+    order: int = 4,
+    keep_pretrigger: bool = False,
+):
+    try:
+        cache = dta_service._file_cache[file_id]
+        wfm = cache['wfm']
+        if index >= len(wfm):
+            raise IndexError(f"Waveform index {index} out of range")
+        return apply_filter(
+            wfm[index], filter_type=filter_type,
+            freq_low=freq_low, freq_high=freq_high,
+            order=order, keep_pretrigger=keep_pretrigger,
+        )
+    except KeyError:
+        raise HTTPException(404, "File not found")
+    except (IndexError, ValueError) as e:
+        raise HTTPException(400, str(e))
+
+
 @router.get("/{file_id}/export/npz")
 async def export_npz(
     file_id: str,
@@ -254,6 +280,41 @@ async def export_npz(
             max_waveforms=max_waveforms, normalize=normalize, fixed_length=fixed_length,
         )
         return FileResponse(filepath, media_type="application/octet-stream", filename=os.path.basename(filepath))
+    except KeyError:
+        raise HTTPException(404, "File not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/{file_id}/export/mat")
+async def export_mat(
+    file_id: str,
+    channel: Optional[int] = None,
+    keep_pretrigger: bool = False,
+    max_waveforms: Optional[int] = None,
+    normalize: bool = False,
+    fixed_length: Optional[int] = None,
+):
+    try:
+        filepath = dta_service.export_mat(
+            file_id, channel=channel, keep_pretrigger=keep_pretrigger,
+            max_waveforms=max_waveforms, normalize=normalize, fixed_length=fixed_length,
+        )
+        return FileResponse(filepath, media_type="application/octet-stream", filename=os.path.basename(filepath))
+    except KeyError:
+        raise HTTPException(404, "File not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/{file_id}/export/csv")
+async def export_csv(
+    file_id: str,
+    channel: Optional[int] = None,
+):
+    try:
+        filepath = dta_service.export_csv(file_id, channel=channel)
+        return FileResponse(filepath, media_type="text/csv", filename=os.path.basename(filepath))
     except KeyError:
         raise HTTPException(404, "File not found")
     except ValueError as e:

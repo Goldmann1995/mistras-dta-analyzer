@@ -2,8 +2,10 @@ import sys
 import os
 import uuid
 import tempfile
+import csv
 import numpy as np
 from scipy.fft import fft, fftfreq
+from scipy.io import savemat
 from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
@@ -403,5 +405,168 @@ def export_npz(
         energies=np.array(meta_energies, dtype=np.float32) if meta_energies else np.array([]),
         durations=np.array(meta_durations, dtype=np.float32) if meta_durations else np.array([]),
     )
+
+    return filepath
+
+
+def export_mat(
+    file_id: str,
+    channel: Optional[int] = None,
+    keep_pretrigger: bool = False,
+    max_waveforms: Optional[int] = None,
+    normalize: bool = False,
+    fixed_length: Optional[int] = None,
+) -> str:
+    data = _file_cache[file_id]
+    rec = data['rec']
+    wfm = data['wfm']
+
+    if len(rec) == 0 or len(wfm) == 0:
+        raise ValueError("No data to export")
+
+    mask = np.ones(len(wfm), dtype=bool)
+    if channel is not None:
+        mask &= wfm['CH'] == channel
+    wfm_filtered = wfm[mask]
+
+    rec_mask = np.ones(len(rec), dtype=bool)
+    if channel is not None:
+        rec_mask &= rec['CH'] == channel
+    rec_filtered = rec[rec_mask]
+
+    if max_waveforms and len(wfm_filtered) > max_waveforms:
+        wfm_filtered = wfm_filtered[:max_waveforms]
+
+    waveforms = []
+    meta_times = []
+    meta_channels = []
+    meta_amplitudes = []
+    meta_energies = []
+    meta_durations = []
+    meta_sample_rates = []
+
+    for row in wfm_filtered:
+        t, V = get_waveform_data(row)
+        if not keep_pretrigger:
+            t, V = _trim_pretrigger(t, V, int(row['TDLY']))
+        waveforms.append(V)
+        meta_times.append(float(row['SSSSSSSS.mmmuuun']))
+        meta_channels.append(int(row['CH']))
+        meta_sample_rates.append(float(row['SRATE']))
+
+    if 'AMP' in rec_filtered.dtype.names:
+        meta_amplitudes = rec_filtered['AMP'][:len(waveforms)].astype(float).tolist()
+    if 'ENER' in rec_filtered.dtype.names:
+        meta_energies = rec_filtered['ENER'][:len(waveforms)].astype(float).tolist()
+    if 'DURATION' in rec_filtered.dtype.names:
+        meta_durations = rec_filtered['DURATION'][:len(waveforms)].astype(float).tolist()
+
+    if fixed_length:
+        padded = []
+        for w in waveforms:
+            if len(w) >= fixed_length:
+                padded.append(w[:fixed_length])
+            else:
+                padded.append(np.pad(w, (0, fixed_length - len(w))))
+        waveform_array = np.array(padded, dtype=np.float64)
+    else:
+        target_len = max(len(w) for w in waveforms)
+        padded = [np.pad(w, (0, target_len - len(w))) if len(w) < target_len else w for w in waveforms]
+        waveform_array = np.array(padded, dtype=np.float64)
+
+    if normalize:
+        global_max = np.max(np.abs(waveform_array))
+        if global_max > 0:
+            waveform_array = waveform_array / global_max
+
+    export_dir = os.path.join(tempfile.gettempdir(), "mistras_exports")
+    os.makedirs(export_dir, exist_ok=True)
+    filename = f"{data['filename'].replace('.DTA', '').replace('.dta', '')}"
+    if channel is not None:
+        filename += f"_ch{channel}"
+    if not keep_pretrigger:
+        filename += "_trimmed"
+    if normalize:
+        filename += "_norm"
+    filename += ".mat"
+    filepath = os.path.join(export_dir, filename)
+
+    mat_dict = {
+        'waveforms': waveform_array,
+        'times': np.array(meta_times, dtype=np.float64),
+        'channels': np.array(meta_channels, dtype=np.int32),
+        'sample_rates': np.array(meta_sample_rates, dtype=np.float64),
+    }
+    if meta_amplitudes:
+        mat_dict['amplitudes'] = np.array(meta_amplitudes, dtype=np.float64)
+    if meta_energies:
+        mat_dict['energies'] = np.array(meta_energies, dtype=np.float64)
+    if meta_durations:
+        mat_dict['durations'] = np.array(meta_durations, dtype=np.float64)
+
+    savemat(filepath, mat_dict, do_compression=True)
+    return filepath
+
+
+def export_csv(
+    file_id: str,
+    channel: Optional[int] = None,
+    include_waveforms: bool = False,
+) -> str:
+    data = _file_cache[file_id]
+    rec = data['rec']
+
+    if len(rec) == 0:
+        raise ValueError("No data to export")
+
+    mask = np.ones(len(rec), dtype=bool)
+    if channel is not None:
+        mask &= rec['CH'] == channel
+    filtered = rec[mask]
+
+    field_map = {
+        'SSSSSSSS.mmmuuun': 'Time_s',
+        'CH': 'Channel',
+        'RISE': 'Rise_us',
+        'PCNTS': 'Peak_Counts',
+        'COUN': 'Counts',
+        'ENER': 'Energy',
+        'DURATION': 'Duration_us',
+        'AMP': 'Amplitude_dB',
+        'ASL': 'ASL',
+        'THR': 'Threshold',
+        'A-FRQ': 'Avg_Frequency_kHz',
+        'RMS': 'RMS',
+        'R-FRQ': 'Rev_Frequency_kHz',
+        'I-FRQ': 'Init_Frequency_kHz',
+        'SIG STRENGTH': 'Signal_Strength',
+        'ABS-ENERGY': 'Abs_Energy',
+        'FRQ-C': 'Freq_Centroid_kHz',
+        'P-FRQ': 'Peak_Frequency_kHz',
+    }
+
+    export_dir = os.path.join(tempfile.gettempdir(), "mistras_exports")
+    os.makedirs(export_dir, exist_ok=True)
+    filename = f"{data['filename'].replace('.DTA', '').replace('.dta', '')}"
+    if channel is not None:
+        filename += f"_ch{channel}"
+    filename += "_hits.csv"
+    filepath = os.path.join(export_dir, filename)
+
+    headers = []
+    field_names = []
+    for fname in rec.dtype.names:
+        if fname in field_map:
+            headers.append(field_map[fname])
+            field_names.append(fname)
+
+    with open(filepath, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        for row in filtered:
+            writer.writerow([
+                float(row[fn]) if isinstance(row[fn], (np.floating, float)) else int(row[fn])
+                for fn in field_names
+            ])
 
     return filepath

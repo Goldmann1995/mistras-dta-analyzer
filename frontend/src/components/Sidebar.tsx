@@ -1,6 +1,6 @@
 import type { FileInfo } from '../types';
 
-export type ViewType = 'dashboard' | 'hits' | 'waveform' | 'wavelet' | 'charts' | 'channels' | 'sensor' | 'export' | 'plugins';
+export type ViewType = 'dashboard' | 'hits' | 'waveform' | 'filter' | 'wavelet' | 'charts' | 'channels' | 'sensor' | 'export' | 'plugins';
 
 interface Props {
   activeFile: FileInfo | null;
@@ -12,6 +12,7 @@ const navItems: { view: ViewType; label: string; code: string }[] = [
   { view: 'dashboard', label: 'Overview', code: 'OVR' },
   { view: 'hits', label: 'Event Log', code: 'EVT' },
   { view: 'waveform', label: 'Waveform', code: 'WFM' },
+  { view: 'filter', label: 'Filter', code: 'FLT' },
   { view: 'wavelet', label: 'Wavelet', code: 'CWT' },
   { view: 'charts', label: 'Analysis', code: 'ANL' },
   { view: 'channels', label: 'Channels', code: 'CHN' },

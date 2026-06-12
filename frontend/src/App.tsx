@@ -5,6 +5,7 @@ import FileUpload from './components/FileUpload';
 import Dashboard from './components/Dashboard';
 import HitTable from './components/HitTable';
 import WaveformViewer from './components/WaveformViewer';
+import FilterView from './components/FilterView';
 import ParametricCharts from './components/ParametricCharts';
 import ChannelView from './components/ChannelView';
 import ExportPanel from './components/ExportPanel';
@@ -41,6 +42,7 @@ function App() {
       case 'dashboard': return <Dashboard file={file} />;
       case 'hits': return <HitTable file={file} onSelectHit={onHitSelect} />;
       case 'waveform': return <WaveformViewer file={file} initialIndex={wfIdx} />;
+      case 'filter': return <FilterView file={file} />;
       case 'wavelet': return <WaveletView file={file} />;
       case 'charts': return <ParametricCharts file={file} />;
       case 'channels': return <ChannelView file={file} />;

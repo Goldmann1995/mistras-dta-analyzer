@@ -1,12 +1,83 @@
 import numpy as np
 import pywt
 from PyEMD import EMD, EEMD
-from scipy.signal import hilbert
+from scipy.signal import hilbert, butter, sosfilt, sosfiltfilt
 from scipy.fft import fft, fftfreq
 from scipy.optimize import brentq, minimize
 from typing import Optional
 
 from MistrasDTA import get_waveform_data
+
+
+def apply_filter(
+    wfm_row,
+    filter_type: str = 'bandpass',
+    freq_low: Optional[float] = None,
+    freq_high: Optional[float] = None,
+    order: int = 4,
+    keep_pretrigger: bool = False,
+) -> dict:
+    t, V = get_waveform_data(wfm_row)
+    sr = float(wfm_row['SRATE'])
+
+    if not keep_pretrigger and wfm_row['TDLY'] < 0:
+        trim = abs(int(wfm_row['TDLY']))
+        t = t[trim:] - t[trim]
+        V = V[trim:]
+
+    nyq = sr / 2.0
+    V_original = V.copy()
+
+    if filter_type == 'bandpass':
+        if freq_low is None or freq_high is None:
+            raise ValueError("bandpass requires freq_low and freq_high")
+        sos = butter(order, [freq_low / nyq, freq_high / nyq], btype='bandpass', output='sos')
+    elif filter_type == 'lowpass':
+        if freq_high is None:
+            raise ValueError("lowpass requires freq_high")
+        sos = butter(order, freq_high / nyq, btype='low', output='sos')
+    elif filter_type == 'highpass':
+        if freq_low is None:
+            raise ValueError("highpass requires freq_low")
+        sos = butter(order, freq_low / nyq, btype='high', output='sos')
+    else:
+        raise ValueError(f"Unknown filter type: {filter_type}")
+
+    V_filtered = sosfiltfilt(sos, V).astype(np.float64)
+
+    step = max(1, len(t) // 5000)
+    t_down = t[::step]
+    V_orig_down = V_original[::step]
+    V_filt_down = V_filtered[::step]
+
+    N = len(V_filtered)
+    yf_orig = fft(V_original)
+    yf_filt = fft(V_filtered)
+    xf = fftfreq(N, 1.0 / sr)
+    pos = xf > 0
+    freqs = xf[pos]
+    mag_orig = (2.0 / N * np.abs(yf_orig[pos]))
+    mag_filt = (2.0 / N * np.abs(yf_filt[pos]))
+
+    f_step = max(1, len(freqs) // 2000)
+    freqs_down = freqs[::f_step]
+    mag_orig_down = mag_orig[::f_step]
+    mag_filt_down = mag_filt[::f_step]
+
+    return {
+        'time_array': t_down.tolist(),
+        'original': V_orig_down.tolist(),
+        'filtered': V_filt_down.tolist(),
+        'fft_frequencies': freqs_down.tolist(),
+        'fft_original': mag_orig_down.tolist(),
+        'fft_filtered': mag_filt_down.tolist(),
+        'filter_type': filter_type,
+        'freq_low': freq_low,
+        'freq_high': freq_high,
+        'order': order,
+        'channel': int(wfm_row['CH']),
+        'sample_rate': sr,
+    }
 
 
 def compute_cwt(
