@@ -3,7 +3,7 @@ import type {
   FileInfo, HitsResponse, WaveformData, FFTResult,
   ChannelStats, ScatterData, HistogramData, PluginInfo, ExportOptions,
   CWTResult, DispersionResult, GroupVelocityResult, EMDResult, LambDispersionResult,
-  SourceLocationResult, FilterResult, ClusterResult,
+  SourceLocationResult, FilterResult, ClusterResult, DeepClusterResult,
 } from '../types';
 
 const api = axios.create({
@@ -146,6 +146,30 @@ export async function runClustering(
   },
 ): Promise<ClusterResult> {
   const { data } = await api.post<ClusterResult>(`/api/analysis/${fileId}/cluster`, config);
+  return data;
+}
+
+export async function runDeepClustering(
+  fileId: string,
+  config: {
+    model?: string;
+    latent_dim?: number;
+    epochs?: number;
+    batch_size?: number;
+    learning_rate?: number;
+    fixed_length?: number;
+    max_waveforms?: number;
+    keep_pretrigger?: boolean;
+    algorithm?: string;
+    n_clusters?: number;
+    eps?: number;
+    min_samples?: number;
+    projection?: string;
+    beta?: number;
+    channel?: number;
+  },
+): Promise<DeepClusterResult> {
+  const { data } = await api.post<DeepClusterResult>(`/api/analysis/${fileId}/deep-cluster`, config);
   return data;
 }
 

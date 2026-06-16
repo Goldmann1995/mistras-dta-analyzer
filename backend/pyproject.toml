@@ -16,6 +16,7 @@ dependencies = [
   "PyWavelets>=1.4.0",
   "EMD-signal>=1.6.0",
   "scikit-learn>=1.3.0",
+  "torch>=2.0.0",
   "MistrasDTA",
 ]
 description = "Backend server for Mistras DTA Analyzer"

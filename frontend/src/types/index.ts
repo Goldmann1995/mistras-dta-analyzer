@@ -263,3 +263,48 @@ export interface ClusterResult {
   tree_rules: TreeRule[];
   tree_feature_importance: FeatureImportance[];
 }
+
+export interface DeepClusterScatterPoint {
+  x: number;
+  y: number;
+  cluster: number;
+  index: number;
+}
+
+export interface DeepClusterStat {
+  label: number;
+  count: number;
+  percentage: number;
+  medoid_index: number;
+}
+
+export interface DeepClusterPrototype {
+  cluster: number;
+  index: number;
+  channel: number;
+  sample_rate: number;
+  time: number[];
+  waveform: number[];
+}
+
+export interface DeepClusterResult {
+  model: string;
+  latent_dim: number;
+  n_waveforms: number;
+  waveform_length: number;
+  epochs: number;
+  final_loss: number;
+  loss_curve: number[];
+  algorithm: string;
+  n_clusters: number;
+  noise_points: number;
+  projection: string;
+  scatter_data: DeepClusterScatterPoint[];
+  cluster_stats: DeepClusterStat[];
+  prototypes: DeepClusterPrototype[];
+  metrics: {
+    silhouette?: number;
+    calinski_harabasz?: number;
+    davies_bouldin?: number;
+  };
+}
