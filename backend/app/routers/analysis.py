@@ -10,6 +10,7 @@ from ..services.signal_analysis import (
     compute_emd, compute_lamb_dispersion, compute_source_locations, apply_filter,
     compute_clustering,
 )
+from ..services.deep_clustering import compute_deep_clustering
 
 
 class SensorConfig(BaseModel):
@@ -25,6 +26,24 @@ class ClusterConfig(BaseModel):
     eps: float = 0.5
     min_samples: int = 5
     max_tree_depth: int = 5
+    channel: Optional[int] = None
+
+
+class DeepClusterConfig(BaseModel):
+    model: str = 'cae'
+    latent_dim: int = 16
+    epochs: int = 40
+    batch_size: int = 64
+    learning_rate: float = 1e-3
+    fixed_length: int = 1024
+    max_waveforms: int = 2000
+    keep_pretrigger: bool = False
+    algorithm: str = 'kmeans'
+    n_clusters: int = 4
+    eps: float = 0.8
+    min_samples: int = 10
+    projection: str = 'pca'
+    beta: float = 1.0
     channel: Optional[int] = None
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -183,6 +202,36 @@ async def cluster_analysis(file_id: str, config: ClusterConfig):
             eps=config.eps,
             min_samples=config.min_samples,
             max_tree_depth=config.max_tree_depth,
+            channel=config.channel,
+        )
+    except KeyError:
+        raise HTTPException(404, "File not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/{file_id}/deep-cluster")
+async def deep_cluster_analysis(file_id: str, config: DeepClusterConfig):
+    try:
+        cache = dta_service._file_cache[file_id]
+        return compute_deep_clustering(
+            cache['wfm'], cache['rec'],
+            model=config.model,
+            latent_dim=config.latent_dim,
+            epochs=config.epochs,
+            batch_size=config.batch_size,
+            learning_rate=config.learning_rate,
+            fixed_length=config.fixed_length,
+            max_waveforms=config.max_waveforms,
+            keep_pretrigger=config.keep_pretrigger,
+            algorithm=config.algorithm,
+            n_clusters=config.n_clusters,
+            eps=config.eps,
+            min_samples=config.min_samples,
+            projection=config.projection,
+            beta=config.beta,
             channel=config.channel,
         )
     except KeyError:
