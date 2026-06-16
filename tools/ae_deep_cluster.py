@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
 """Standalone deep latent-space clustering for Mistras AE waveforms.
 
-Pipeline (no frontend/backend needed, runs entirely on your machine):
+Pipeline (runs entirely on your machine, no frontend/backend):
 
-    .DTA waveforms  ->  Autoencoder (CAE / VAE)  ->  latent space
+    .DTA waveforms  ->  feature rep (waveform / fft / both)
+                    ->  Autoencoder (CAE / VAE)  ->  latent space
+                    ->  2D embedding (UMAP / t-SNE / PCA)
                     ->  clustering (KMeans / GMM / HDBSCAN / DBSCAN)
-                    ->  2D projection (PCA / t-SNE) + medoid prototype waveforms
+                    ->  medoid prototype waveforms
+
+WHY FREQUENCY MATTERS for AE: damage mechanisms (matrix cracking, fiber
+breakage, delamination) separate mainly by *frequency content*. Raw
+time-domain autoencoders tend to encode amplitude/decay (continuous) and
+give poorly separated clusters. Use --feature both (default) or fft.
 
 Outputs (saved into --out):
     loss_curve.png        training reconstruction loss per epoch
-    latent_scatter.png    2D latent map, colored by cluster
-    prototypes.png        the medoid (most representative) waveform of each cluster
-    cluster_labels.csv    per-waveform: index, channel, time, cluster, latent dims
+    latent_scatter.png    2D embedding, colored by cluster
+    prototypes.png        medoid (representative) waveform of each cluster
+    cluster_labels.csv    per-waveform: index, channel, time, cluster, latent
     latent_codes.npy      raw latent matrix (N x latent_dim)
     summary.txt           run config + cluster sizes + quality metrics
 
-Example:
-    python tools/ae_deep_cluster.py mydata.DTA
-    python tools/ae_deep_cluster.py mydata.DTA --model vae --algorithm hdbscan --projection tsne
+Examples:
+    python tools/ae_deep_cluster.py data.DTA --feature both --clusters 4
+    python tools/ae_deep_cluster.py data.DTA --feature fft --algorithm hdbscan --projection umap
 """
 
 import os
@@ -42,11 +49,39 @@ def round_up_multiple(n, m):
     return int(np.ceil(n / m) * m)
 
 
-def load_waveforms(dta_path, channel, max_waveforms, fixed_length, keep_pretrigger):
-    """Return (X, meta, L).
+def _waveform_to_features(v, L, feature):
+    """Build the model input channels for one (peak-normalized) waveform v.
 
-    If fixed_length <= 0, auto-detect from the median waveform length in the
-    file (rounded up to a multiple of 16).
+    Returns an array of shape (C, L):
+        waveform -> 1 channel  (time domain)
+        fft      -> 1 channel  (log-magnitude spectrum, resampled to L)
+        both     -> 2 channels (time + spectrum)
+    """
+    time_ch = v  # already length L, peak-normalized
+
+    if feature == 'waveform':
+        return time_ch[None, :]
+
+    # log-magnitude spectrum, resampled to length L so conv arch is unchanged
+    spec = np.log1p(np.abs(np.fft.rfft(v)))          # length L//2 + 1
+    xp = np.linspace(0, 1, len(spec))
+    xq = np.linspace(0, 1, L)
+    spec_rs = np.interp(xq, xp, spec).astype(np.float32)
+    smax = np.max(np.abs(spec_rs))
+    if smax > 0:
+        spec_rs = spec_rs / smax
+
+    if feature == 'fft':
+        return spec_rs[None, :]
+    return np.stack([time_ch, spec_rs])              # both -> (2, L)
+
+
+def load_waveforms(dta_path, channel, max_waveforms, fixed_length,
+                   keep_pretrigger, feature):
+    """Return (X, X_wave, meta, L, C).
+
+    X      : model input (N, C, L) for the chosen feature
+    X_wave : peak-normalized time-domain waveforms (N, L) for plotting
     """
     print(f"[1/5] Reading {dta_path} ...")
     rec, wfm = read_bin(dta_path)
@@ -80,7 +115,7 @@ def load_waveforms(dta_path, channel, max_waveforms, fixed_length, keep_pretrigg
         sel = np.linspace(0, len(idx_all) - 1, max_waveforms).astype(int)
         idx_all = idx_all[sel]
 
-    rows, meta = [], []
+    feats, waves, meta = [], [], []
     for i in idx_all:
         row = wfm[i]
         t, V = get_waveform_data(row)
@@ -93,7 +128,9 @@ def load_waveforms(dta_path, channel, max_waveforms, fixed_length, keep_pretrigg
         peak = np.max(np.abs(v))
         if peak > 0:
             v = v / peak
-        rows.append(v.astype(np.float32))
+        v = v.astype(np.float32)
+        feats.append(_waveform_to_features(v, L, feature))
+        waves.append(v)
         meta.append({
             'index': int(i),
             'channel': int(row['CH']),
@@ -101,26 +138,26 @@ def load_waveforms(dta_path, channel, max_waveforms, fixed_length, keep_pretrigg
             'sample_rate': float(row['SRATE']),
         })
 
-    if len(rows) < 4:
+    if len(feats) < 4:
         raise SystemExit("Not enough valid waveforms (need >= 4).")
-    X = np.stack(rows)
-    print(f"      using {X.shape[0]} waveforms, length={L} "
-          f"(channel={'all' if channel is None else channel}, "
-          f"pretrigger={'kept' if keep_pretrigger else 'trimmed'})")
-    return X, meta, L
+    X = np.stack(feats)            # (N, C, L)
+    X_wave = np.stack(waves)       # (N, L)
+    C = X.shape[1]
+    print(f"      using {X.shape[0]} waveforms, length={L}, feature={feature} "
+          f"({C} channel{'s' if C > 1 else ''}), "
+          f"pretrigger={'kept' if keep_pretrigger else 'trimmed'}")
+    return X, X_wave, meta, L, C
 
 
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
-def build_models(torch, nn, length, latent_dim):
-    """Build CAE and VAE with BatchNorm for stable training."""
-
+def build_models(torch, nn, length, latent_dim, in_ch):
     class Encoder(nn.Module):
         def __init__(self):
             super().__init__()
             self.conv = nn.Sequential(
-                nn.Conv1d(1, 32, 7, stride=2, padding=3),
+                nn.Conv1d(in_ch, 32, 7, stride=2, padding=3),
                 nn.BatchNorm1d(32), nn.ReLU(),
                 nn.Conv1d(32, 64, 7, stride=2, padding=3),
                 nn.BatchNorm1d(64), nn.ReLU(),
@@ -129,7 +166,6 @@ def build_models(torch, nn, length, latent_dim):
                 nn.Conv1d(128, 128, 5, stride=2, padding=2),
                 nn.BatchNorm1d(128), nn.ReLU(),
             )
-            # length / 2^4
             self.flat_len = (length // 16) * 128
             self.fc = nn.Linear(self.flat_len, latent_dim)
 
@@ -148,19 +184,17 @@ def build_models(torch, nn, length, latent_dim):
                 nn.BatchNorm1d(64), nn.ReLU(),
                 nn.ConvTranspose1d(64, 32, 7, 2, 3, output_padding=1),
                 nn.BatchNorm1d(32), nn.ReLU(),
-                nn.ConvTranspose1d(32, 1, 7, 2, 3, output_padding=1),
+                nn.ConvTranspose1d(32, in_ch, 7, 2, 3, output_padding=1),
             )
 
         def forward(self, z):
             h = self.fc(z).view(z.size(0), 128, self.length // 16)
-            out = self.deconv(h)
-            return out[:, :, :self.length]
+            return self.deconv(h)[:, :, :self.length]
 
     class CAE(nn.Module):
         def __init__(self):
             super().__init__()
-            self.enc = Encoder()
-            self.dec = Decoder(self.enc.flat_len)
+            self.enc = Encoder(); self.dec = Decoder(self.enc.flat_len)
         def forward(self, x):
             z = self.enc(x); return self.dec(z), z
         def encode(self, x):
@@ -184,7 +218,7 @@ def build_models(torch, nn, length, latent_dim):
     return CAE, VAE
 
 
-def train(args, X, length):
+def train(args, X, length, C):
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
@@ -196,36 +230,30 @@ def train(args, X, length):
     print(f"[2/5] Training {args.model.upper()} on {device} "
           f"(latent={args.latent_dim}, epochs={args.epochs}, lr={args.lr}) ...")
 
-    CAE, VAE = build_models(torch, nn, length, args.latent_dim)
+    CAE, VAE = build_models(torch, nn, length, args.latent_dim, C)
     net = (VAE() if args.model == 'vae' else CAE()).to(device)
-    n_params = sum(p.numel() for p in net.parameters())
-    print(f"      model parameters: {n_params:,}")
+    print(f"      model parameters: {sum(p.numel() for p in net.parameters()):,}")
 
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs, eta_min=args.lr * 0.01)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs, eta_min=args.lr * 0.01)
 
-    X_t = torch.from_numpy(X).unsqueeze(1).to(device)
+    X_t = torch.from_numpy(X).to(device)            # (N, C, L)
     N = X.shape[0]
     bs = min(args.batch_size, N)
     n_batches = max(1, N // bs)
 
     net.train()
-    loss_curve = []
-    best_loss = float('inf')
-    patience_counter = 0
-
+    loss_curve, best, patience = [], float('inf'), 0
     for epoch in range(args.epochs):
         perm = torch.randperm(N, device=device)
         run = 0.0
         for b in range(n_batches):
-            idx = perm[b * bs:(b + 1) * bs]
-            xb = X_t[idx]
+            xb = X_t[perm[b * bs:(b + 1) * bs]]
             opt.zero_grad()
             if args.model == 'vae':
                 recon, mu, logvar = net(xb)
-                rec_loss = F.mse_loss(recon, xb)
-                kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-                loss = rec_loss + args.beta * kl
+                loss = F.mse_loss(recon, xb) + args.beta * (
+                    -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp()))
             else:
                 recon, _ = net(xb)
                 loss = F.mse_loss(recon, xb)
@@ -233,22 +261,18 @@ def train(args, X, length):
             nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             opt.step()
             run += float(loss.item())
-        scheduler.step()
+        sched.step()
         avg = run / n_batches
         loss_curve.append(avg)
-
-        if avg < best_loss * 0.999:
-            best_loss = avg
-            patience_counter = 0
+        if avg < best * 0.999:
+            best, patience = avg, 0
         else:
-            patience_counter += 1
-
+            patience += 1
         if (epoch + 1) % max(1, args.epochs // 10) == 0 or epoch == 0:
-            lr_now = scheduler.get_last_lr()[0]
-            print(f"      epoch {epoch + 1:3d}/{args.epochs}  loss={avg:.6f}  lr={lr_now:.2e}")
-
-        if args.early_stop > 0 and patience_counter >= args.early_stop:
-            print(f"      early stop at epoch {epoch + 1} (no improvement for {args.early_stop} epochs)")
+            print(f"      epoch {epoch + 1:3d}/{args.epochs}  loss={avg:.6f}  "
+                  f"lr={sched.get_last_lr()[0]:.2e}")
+        if args.early_stop > 0 and patience >= args.early_stop:
+            print(f"      early stop at epoch {epoch + 1}")
             break
 
     net.eval()
@@ -259,75 +283,108 @@ def train(args, X, length):
 
 
 # --------------------------------------------------------------------------- #
-# Clustering + metrics + projection
+# Embedding + clustering
 # --------------------------------------------------------------------------- #
-def cluster_latent(args, latent):
+def embed_2d(args, latent):
+    from sklearn.decomposition import PCA
+    N = latent.shape[0]
+    if latent.shape[1] <= 2:
+        p = latent if latent.shape[1] == 2 else np.column_stack([latent[:, 0], np.zeros(N)])
+        return p, 'latent'
+
+    if args.projection == 'umap':
+        try:
+            import umap
+            reducer = umap.UMAP(n_components=2, random_state=42,
+                                n_neighbors=args.umap_neighbors, min_dist=args.umap_mindist)
+            return reducer.fit_transform(latent), 'UMAP'
+        except ImportError:
+            print("      [tip] umap-learn not installed; falling back to t-SNE. "
+                  "For best AE clustering:  pip install umap-learn")
+            args.projection = 'tsne'
+
+    if args.projection == 'tsne':
+        from sklearn.manifold import TSNE
+        perp = float(min(30, max(2, N // 4), N - 1))
+        return TSNE(2, random_state=42, perplexity=perp, init='pca').fit_transform(latent), 't-SNE'
+
+    return PCA(2, random_state=42).fit_transform(latent), 'PCA'
+
+
+def cluster(args, latent, emb2d):
+    """Return (space, labels) where `space` is the array clustering ran on
+    (used for metrics). KMeans/GMM use the latent; density methods use the
+    2D embedding by default (curse-of-dimensionality + matches AE literature
+    latent->UMAP->HDBSCAN)."""
     from sklearn.preprocessing import StandardScaler
     from sklearn.cluster import KMeans, DBSCAN
     from sklearn.mixture import GaussianMixture
 
-    print(f"[3/5] Clustering latent space with {args.algorithm} ...")
-    Z = StandardScaler().fit_transform(latent)
+    print(f"[3/5] Clustering with {args.algorithm} ...")
+    Zlat = StandardScaler().fit_transform(latent)
+    Zemb = StandardScaler().fit_transform(emb2d)
+
+    density = args.algorithm in ('hdbscan', 'dbscan')
+    use_embed = density and args.density_space == 'embed'
+    space = Zemb if use_embed else Zlat
+    where = '2D embedding' if use_embed else 'latent'
+
     if args.algorithm == 'kmeans':
-        labels = KMeans(args.clusters, random_state=42, n_init=10).fit_predict(Z)
+        labels = KMeans(args.clusters, random_state=42, n_init=10).fit_predict(space)
     elif args.algorithm == 'gmm':
-        labels = GaussianMixture(args.clusters, random_state=42, n_init=3).fit_predict(Z)
+        labels = GaussianMixture(args.clusters, random_state=42, n_init=3).fit_predict(space)
     elif args.algorithm == 'dbscan':
-        labels = DBSCAN(eps=args.eps, min_samples=args.min_samples).fit_predict(Z)
+        labels = DBSCAN(eps=args.eps, min_samples=args.min_samples).fit_predict(space)
     elif args.algorithm == 'hdbscan':
         from sklearn.cluster import HDBSCAN
-        labels = HDBSCAN(
-            min_cluster_size=max(args.min_cluster_size, 2),
-            min_samples=args.min_samples,
-        ).fit_predict(Z)
+        labels = HDBSCAN(min_cluster_size=max(args.min_cluster_size, 2),
+                         min_samples=args.min_samples).fit_predict(space)
     else:
         raise SystemExit(f"Unknown algorithm: {args.algorithm}")
 
     valid = sorted(l for l in set(labels) if l >= 0)
     noise = int(np.sum(labels == -1))
-    print(f"      clusters={len(valid)}  noise={noise}/{len(labels)}")
+    print(f"      ran on {where}: clusters={len(valid)}  noise={noise}/{len(labels)}")
 
-    if len(valid) == 0:
-        print("\n      WARNING: 0 clusters found. For HDBSCAN try:")
-        print("        --min-cluster-size 20   (lower = more clusters)")
-        print("        --min-samples 3         (lower = less conservative)")
-        print("        --epochs 150            (better latent = easier to cluster)")
-        print("      Or use --algorithm kmeans --clusters 4 as baseline.\n")
+    if density and len(valid) == 0:
+        print("\n      WARNING: 0 clusters. Try:")
+        print("        --projection umap              (pip install umap-learn; best for AE)")
+        print("        --min-cluster-size 15          (lower = more clusters)")
+        print("        --feature both  or  --feature fft")
+        print("        --algorithm kmeans --clusters 4   (baseline that always returns clusters)\n")
+    return space, labels
 
-    return Z, labels
 
-
-def compute_metrics(Z, labels):
+def compute_metrics(space, labels):
     from sklearn.metrics import (silhouette_score, calinski_harabasz_score,
                                  davies_bouldin_score)
     m = {}
     valid = sorted(l for l in set(labels) if l >= 0)
     nn_mask = labels >= 0
     if len(valid) >= 2 and np.sum(nn_mask) > len(valid):
-        m['silhouette'] = silhouette_score(Z[nn_mask], labels[nn_mask])
-        m['calinski_harabasz'] = calinski_harabasz_score(Z[nn_mask], labels[nn_mask])
-        m['davies_bouldin'] = davies_bouldin_score(Z[nn_mask], labels[nn_mask])
+        m['silhouette'] = silhouette_score(space[nn_mask], labels[nn_mask])
+        m['calinski_harabasz'] = calinski_harabasz_score(space[nn_mask], labels[nn_mask])
+        m['davies_bouldin'] = davies_bouldin_score(space[nn_mask], labels[nn_mask])
     return m, valid
 
 
-def project_2d(args, latent):
+def latent_diagnostic(latent):
+    """Print how much variance the top latent PCs explain — tells you whether
+    real structure exists or the latent is one diffuse blob."""
     from sklearn.decomposition import PCA
-    from sklearn.manifold import TSNE
-    N = latent.shape[0]
-    if latent.shape[1] <= 2:
-        p = latent if latent.shape[1] == 2 else np.column_stack([latent[:, 0], np.zeros(N)])
-        return p, 'latent'
-    if args.projection == 'tsne':
-        perp = float(min(30, max(2, N // 4), N - 1))
-        return TSNE(2, random_state=42, perplexity=perp, init='pca').fit_transform(latent), 't-SNE'
-    return PCA(2, random_state=42).fit_transform(latent), 'PCA'
+    k = min(5, latent.shape[1])
+    pca = PCA(k, random_state=42).fit(latent)
+    ev = pca.explained_variance_ratio_
+    print(f"      latent PCA top-{k} explained variance: "
+          + ", ".join(f"{v*100:.0f}%" for v in ev)
+          + f"  (cum {ev.sum()*100:.0f}%)")
 
 
 # --------------------------------------------------------------------------- #
 # Output
 # --------------------------------------------------------------------------- #
-def save_outputs(args, X, meta, length, latent, loss_curve, Z, labels,
-                 proj, proj_name, m, valid):
+def save_outputs(args, X_wave, meta, length, C, latent, loss_curve, space, labels,
+                 emb2d, proj_name, m, valid):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -340,90 +397,81 @@ def save_outputs(args, X, meta, length, latent, loss_curve, Z, labels,
 
     print(f"[4/5] Writing results to {args.out}/ ...")
 
-    # ---- loss curve ----
+    # loss curve
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(range(1, len(loss_curve) + 1), loss_curve, color='#0891b2', lw=1.5)
     ax.set_xlabel('Epoch'); ax.set_ylabel('Loss')
     ax.set_title(f'{args.model.upper()} training loss  (final={loss_curve[-1]:.6f})')
     ax.grid(alpha=0.3)
-    converged = loss_curve[-1] < loss_curve[0] * 0.5
-    if not converged:
-        ax.annotate('loss still dropping — try more --epochs',
+    if loss_curve[-1] > loss_curve[0] * 0.5:
+        ax.annotate('still dropping — try more --epochs',
                     xy=(len(loss_curve), loss_curve[-1]), fontsize=9, color='red',
                     xytext=(-120, 20), textcoords='offset points',
                     arrowprops=dict(arrowstyle='->', color='red'))
     plt.tight_layout()
     plt.savefig(os.path.join(args.out, 'loss_curve.png'), dpi=150); plt.close()
 
-    # ---- latent scatter ----
+    # 2D embedding scatter
     fig, ax = plt.subplots(figsize=(8, 7))
     for l in sorted(set(labels)):
-        pts = proj[labels == l]
+        pts = emb2d[labels == l]
         ax.scatter(pts[:, 0], pts[:, 1], s=12, color=color(l), alpha=0.7,
-                   label=('noise' if l == -1 else f'C{l} (n={np.sum(labels == l)})'),
-                   edgecolors='none')
+                   edgecolors='none',
+                   label=('noise' if l == -1 else f'C{l} (n={int(np.sum(labels == l))})'))
     ax.set_xlabel(f'{proj_name}-1'); ax.set_ylabel(f'{proj_name}-2')
-    title = f'Latent space ({proj_name}) — {args.algorithm}'
+    title = f'{proj_name} embedding — {args.algorithm} on {args.feature}'
     if 'silhouette' in m:
         title += f'  sil={m["silhouette"]:.3f}'
-    ax.set_title(title)
-    ax.legend(markerscale=2, fontsize=9, loc='best')
+    ax.set_title(title); ax.legend(markerscale=2, fontsize=9, loc='best')
     ax.grid(alpha=0.2); plt.tight_layout()
     plt.savefig(os.path.join(args.out, 'latent_scatter.png'), dpi=150); plt.close()
 
-    # ---- medoid prototype waveforms ----
+    # medoid prototype waveforms (always time-domain for interpretability)
     protos = []
     for l in valid:
         members = np.where(labels == l)[0]
-        centroid = Z[members].mean(axis=0)
-        medoid = members[int(np.argmin(np.linalg.norm(Z[members] - centroid, axis=1)))]
+        centroid = space[members].mean(axis=0)
+        medoid = members[int(np.argmin(np.linalg.norm(space[members] - centroid, axis=1)))]
         protos.append((l, medoid))
 
     if protos:
-        ncol = min(3, len(protos))
-        nrow = int(np.ceil(len(protos) / ncol))
+        ncol = min(3, len(protos)); nrow = int(np.ceil(len(protos) / ncol))
         fig, axes = plt.subplots(nrow, ncol, figsize=(5 * ncol, 2.5 * nrow), squeeze=False)
         for ax in axes.flat:
             ax.axis('off')
         for ax, (l, medoid) in zip(axes.flat, protos):
             ax.axis('on')
-            ax.plot(X[medoid], color=color(l), lw=0.8)
+            ax.plot(X_wave[medoid], color=color(l), lw=0.8)
             cnt = int(np.sum(labels == l))
-            ax.set_title(
-                f'C{l}  n={cnt} ({100*cnt/len(labels):.1f}%)  '
-                f'CH{meta[medoid]["channel"]} #{meta[medoid]["index"]}  '
-                f'SR={meta[medoid]["sample_rate"]/1e6:.1f}MHz',
-                fontsize=9)
-            ax.set_xlabel('sample'); ax.set_ylabel('norm. V')
-            ax.tick_params(labelsize=7)
+            ax.set_title(f'C{l}  n={cnt} ({100*cnt/len(labels):.1f}%)  '
+                         f'CH{meta[medoid]["channel"]} #{meta[medoid]["index"]}', fontsize=9)
+            ax.set_xlabel('sample'); ax.set_ylabel('norm. V'); ax.tick_params(labelsize=7)
         plt.suptitle('Cluster prototype (medoid) waveforms', fontsize=12, y=1.01)
         plt.tight_layout()
         plt.savefig(os.path.join(args.out, 'prototypes.png'), dpi=150, bbox_inches='tight')
         plt.close()
 
-    # ---- per-waveform labels CSV ----
+    # labels CSV
     with open(os.path.join(args.out, 'cluster_labels.csv'), 'w', newline='') as f:
         w = csv.writer(f)
-        header = ['wfm_index', 'channel', 'time_s', 'sample_rate', 'cluster'] \
-                 + [f'z{i}' for i in range(latent.shape[1])]
-        w.writerow(header)
+        w.writerow(['wfm_index', 'channel', 'time_s', 'sample_rate', 'cluster']
+                   + [f'z{i}' for i in range(latent.shape[1])])
         for i, md in enumerate(meta):
             w.writerow([md['index'], md['channel'], md['time'], md['sample_rate'],
-                        int(labels[i])]
-                       + [round(float(z), 6) for z in latent[i]])
+                        int(labels[i])] + [round(float(z), 6) for z in latent[i]])
 
     np.save(os.path.join(args.out, 'latent_codes.npy'), latent)
 
-    # ---- summary ----
+    # summary
     lines = [
         "AE Deep Latent-Space Clustering — summary",
         "=" * 44,
         f"input            : {args.input}",
+        f"feature          : {args.feature} ({C} ch)",
         f"model            : {args.model}   latent_dim={latent.shape[1]}   "
         f"epochs={len(loss_curve)}/{args.epochs}",
-        f"waveforms        : {X.shape[0]}   length={length}",
-        f"clustering       : {args.algorithm}",
-        f"projection       : {proj_name}",
+        f"waveforms        : {X_wave.shape[0]}   length={length}",
+        f"clustering       : {args.algorithm}   embedding={proj_name}",
         f"final loss       : {loss_curve[-1]:.6f}",
         f"n_clusters       : {len(valid)}",
         f"noise points     : {int(np.sum(labels == -1))}",
@@ -441,11 +489,6 @@ def save_outputs(args, X, meta, length, latent, loss_curve, Z, labels,
         lines.append(f"  davies_bouldin    : {m['davies_bouldin']:.4f}  (lower=better)")
     else:
         lines.append("  (need >= 2 non-noise clusters)")
-    lines.append("")
-    lines.append("files written:")
-    for f in ['loss_curve.png', 'latent_scatter.png', 'prototypes.png',
-              'cluster_labels.csv', 'latent_codes.npy', 'summary.txt']:
-        lines.append(f"  {args.out}/{f}")
     summary = "\n".join(lines)
     with open(os.path.join(args.out, 'summary.txt'), 'w') as f:
         f.write(summary + "\n")
@@ -463,6 +506,8 @@ def main():
     ap.add_argument('--out', default='ae_cluster_out', help='output directory')
 
     g = ap.add_argument_group('representation learning')
+    g.add_argument('--feature', choices=['waveform', 'fft', 'both'], default='both',
+                   help='input representation; fft/both separate AE damage modes better')
     g.add_argument('--model', choices=['cae', 'vae'], default='cae')
     g.add_argument('--latent-dim', type=int, default=16, dest='latent_dim')
     g.add_argument('--epochs', type=int, default=100)
@@ -478,16 +523,22 @@ def main():
     g.add_argument('--channel', type=int, default=None, help='restrict to one channel')
     g.add_argument('--device', choices=['auto', 'cpu', 'cuda'], default='auto')
 
-    g = ap.add_argument_group('clustering')
+    g = ap.add_argument_group('embedding + clustering')
+    g.add_argument('--projection', choices=['umap', 'tsne', 'pca'], default='pca',
+                   help='2D embedding; umap recommended for density clustering')
+    g.add_argument('--umap-neighbors', type=int, default=15, dest='umap_neighbors')
+    g.add_argument('--umap-mindist', type=float, default=0.1, dest='umap_mindist')
     g.add_argument('--algorithm', choices=['kmeans', 'gmm', 'hdbscan', 'dbscan'],
                    default='kmeans')
     g.add_argument('--clusters', type=int, default=4, help='for kmeans/gmm')
-    g.add_argument('--eps', type=float, default=0.8, help='for dbscan')
-    g.add_argument('--min-samples', type=int, default=3, dest='min_samples',
-                   help='HDBSCAN: min_samples (lower=less conservative)')
-    g.add_argument('--min-cluster-size', type=int, default=20, dest='min_cluster_size',
-                   help='HDBSCAN: min_cluster_size (lower=more clusters)')
-    g.add_argument('--projection', choices=['pca', 'tsne'], default='pca')
+    g.add_argument('--density-space', choices=['embed', 'latent'], default='embed',
+                   dest='density_space',
+                   help='space hdbscan/dbscan run on (embed=2D, robust)')
+    g.add_argument('--eps', type=float, default=0.3, help='for dbscan')
+    g.add_argument('--min-samples', type=int, default=5, dest='min_samples',
+                   help='hdbscan/dbscan: lower = less conservative')
+    g.add_argument('--min-cluster-size', type=int, default=30, dest='min_cluster_size',
+                   help='hdbscan: lower = more clusters')
     args = ap.parse_args()
 
     try:
@@ -495,14 +546,16 @@ def main():
     except ImportError:
         raise SystemExit("PyTorch required.  pip install torch")
 
-    X, meta, length = load_waveforms(args.input, args.channel, args.max_waveforms,
-                                     args.fixed_length, args.keep_pretrigger)
-    latent, loss_curve = train(args, X, length)
-    Z, labels = cluster_latent(args, latent)
-    m, valid = compute_metrics(Z, labels)
-    proj, proj_name = project_2d(args, latent)
-    save_outputs(args, X, meta, length, latent, loss_curve, Z, labels,
-                 proj, proj_name, m, valid)
+    X, X_wave, meta, length, C = load_waveforms(
+        args.input, args.channel, args.max_waveforms,
+        args.fixed_length, args.keep_pretrigger, args.feature)
+    latent, loss_curve = train(args, X, length, C)
+    latent_diagnostic(latent)
+    emb2d, proj_name = embed_2d(args, latent)
+    space, labels = cluster(args, latent, emb2d)
+    m, valid = compute_metrics(space, labels)
+    save_outputs(args, X_wave, meta, length, C, latent, loss_curve,
+                 space, labels, emb2d, proj_name, m, valid)
 
 
 if __name__ == '__main__':
