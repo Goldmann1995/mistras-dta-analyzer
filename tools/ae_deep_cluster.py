@@ -42,6 +42,24 @@ if _REPO_ROOT not in sys.path:
 from MistrasDTA import read_bin, get_waveform_data  # noqa: E402
 
 
+# Parametric AE hit features (Mistras field -> readable label) used to give
+# the deep clusters a physical interpretation.
+FEATURE_FIELDS = [
+    ('AMP', 'amplitude_dB'), ('ENER', 'energy'), ('ABS-ENERGY', 'abs_energy'),
+    ('RISE', 'rise_us'), ('DURATION', 'duration_us'), ('COUN', 'counts'),
+    ('A-FRQ', 'avg_freq_kHz'), ('P-FRQ', 'peak_freq_kHz'),
+    ('FRQ-C', 'centroid_freq_kHz'), ('R-FRQ', 'rev_freq_kHz'),
+    ('I-FRQ', 'init_freq_kHz'),
+]
+
+
+def _extract_feats(rec_row):
+    if rec_row is None:
+        return {}
+    names = rec_row.dtype.names
+    return {label: float(rec_row[f]) for f, label in FEATURE_FIELDS if f in names}
+
+
 # --------------------------------------------------------------------------- #
 # Data preparation
 # --------------------------------------------------------------------------- #
@@ -115,6 +133,15 @@ def load_waveforms(dta_path, channel, max_waveforms, fixed_length,
         sel = np.linspace(0, len(idx_all) - 1, max_waveforms).astype(int)
         idx_all = idx_all[sel]
 
+    # Align parametric hit features (in `rec`) to each waveform for physical
+    # interpretation. wfm and rec are usually 1:1 by index; otherwise match by
+    # nearest timestamp.
+    same_len = isinstance(rec, np.recarray) and len(rec) == len(wfm)
+    rec_times = (rec['SSSSSSSS.mmmuuun']
+                 if isinstance(rec, np.recarray) and len(rec)
+                 and 'SSSSSSSS.mmmuuun' in rec.dtype.names and not same_len
+                 else None)
+
     feats, waves, meta = [], [], []
     for i in idx_all:
         row = wfm[i]
@@ -129,6 +156,13 @@ def load_waveforms(dta_path, channel, max_waveforms, fixed_length,
         if peak > 0:
             v = v / peak
         v = v.astype(np.float32)
+
+        rec_row = None
+        if same_len:
+            rec_row = rec[i]
+        elif rec_times is not None:
+            rec_row = rec[int(np.argmin(np.abs(rec_times - float(row['SSSSSSSS.mmmuuun']))))]
+
         feats.append(_waveform_to_features(v, L, feature))
         waves.append(v)
         meta.append({
@@ -136,6 +170,7 @@ def load_waveforms(dta_path, channel, max_waveforms, fixed_length,
             'channel': int(row['CH']),
             'time': float(row['SSSSSSSS.mmmuuun']),
             'sample_rate': float(row['SRATE']),
+            'feat': _extract_feats(rec_row),
         })
 
     if len(feats) < 4:
@@ -355,7 +390,7 @@ def cluster(args, latent, emb2d):
     return space, labels
 
 
-def compute_metrics(space, labels):
+def metrics_on(space, labels):
     from sklearn.metrics import (silhouette_score, calinski_harabasz_score,
                                  davies_bouldin_score)
     m = {}
@@ -366,6 +401,24 @@ def compute_metrics(space, labels):
         m['calinski_harabasz'] = calinski_harabasz_score(space[nn_mask], labels[nn_mask])
         m['davies_bouldin'] = davies_bouldin_score(space[nn_mask], labels[nn_mask])
     return m, valid
+
+
+def scan_k(latent, kmax):
+    """Sweep KMeans k and report latent-space silhouette to help pick k."""
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.cluster import KMeans
+    from sklearn.metrics import silhouette_score
+    Z = StandardScaler().fit_transform(latent)
+    print("      k-scan (KMeans, silhouette on latent):")
+    best_k, best_s = None, -1
+    for k in range(2, kmax + 1):
+        lab = KMeans(k, random_state=42, n_init=10).fit_predict(Z)
+        s = silhouette_score(Z, lab)
+        flag = ''
+        if s > best_s:
+            best_s, best_k, flag = s, k, '  <- best'
+        print(f"        k={k}: silhouette={s:.4f}{flag}")
+    print(f"      suggested clusters: {best_k}\n")
 
 
 def latent_diagnostic(latent):
@@ -380,11 +433,68 @@ def latent_diagnostic(latent):
           + f"  (cum {ev.sum()*100:.0f}%)")
 
 
+def characterize(args, X_wave, meta, length, labels, valid, plt, color):
+    """Physically interpret clusters: mean FFT spectrum per cluster + a table
+    of parametric AE hit features (peak frequency, energy, amplitude, ...).
+    This is what turns black-box clusters into damage-mode statements."""
+    out_lines = []
+
+    # ----- mean spectrum per cluster (the key frequency-separation plot) -----
+    sr = float(np.median([md['sample_rate'] for md in meta]))
+    freqs_khz = np.fft.rfftfreq(length, 1.0 / sr) / 1000.0
+    spectra = np.abs(np.fft.rfft(X_wave, axis=1))      # (N, L//2+1)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for l in valid:
+        ms = spectra[labels == l].mean(axis=0)
+        ax.plot(freqs_khz, ms, color=color(l), lw=1.3, label=f'C{l} (n={int(np.sum(labels==l))})')
+    ax.set_xlabel('Frequency (kHz)'); ax.set_ylabel('Mean |FFT| (norm. waveforms)')
+    ax.set_title('Cluster mean frequency spectra — physical signature')
+    ax.legend(fontsize=9); ax.grid(alpha=0.25); plt.tight_layout()
+    plt.savefig(os.path.join(args.out, 'cluster_spectra.png'), dpi=150); plt.close()
+
+    # ----- parametric feature table per cluster -----
+    keys = [lbl for _, lbl in FEATURE_FIELDS
+            if any(lbl in md.get('feat', {}) for md in meta)]
+    if keys:
+        rows = []
+        for l in valid:
+            members = [i for i in range(len(meta)) if labels[i] == l]
+            row = {'cluster': l, 'count': len(members)}
+            for k in keys:
+                vals = np.array([meta[i]['feat'][k] for i in members
+                                 if k in meta[i]['feat']], dtype=float)
+                row[k] = (float(np.mean(vals)), float(np.std(vals))) if len(vals) else (np.nan, np.nan)
+            rows.append(row)
+
+        with open(os.path.join(args.out, 'cluster_features.csv'), 'w', newline='') as f:
+            w = csv.writer(f)
+            header = ['cluster', 'count'] + [f'{k}_mean' for k in keys] + [f'{k}_std' for k in keys]
+            w.writerow(header)
+            for r in rows:
+                w.writerow([r['cluster'], r['count']]
+                           + [round(r[k][0], 3) for k in keys]
+                           + [round(r[k][1], 3) for k in keys])
+
+        # compact text table for the summary, highlighting frequency + energy
+        hi = [k for k in ('peak_freq_kHz', 'centroid_freq_kHz', 'avg_freq_kHz',
+                          'amplitude_dB', 'energy', 'duration_us', 'rise_us') if k in keys]
+        out_lines.append("")
+        out_lines.append("physical interpretation (mean per cluster):")
+        out_lines.append("  cluster  " + "  ".join(f"{k:>16}" for k in hi))
+        for r in rows:
+            out_lines.append(f"  C{r['cluster']:<6} "
+                             + "  ".join(f"{r[k][0]:>16.2f}" for k in hi))
+        out_lines.append("  -> low centroid/peak freq usually = delamination/debonding;")
+        out_lines.append("     high freq = matrix cracking / fiber breakage (verify with your material).")
+    return out_lines
+
+
 # --------------------------------------------------------------------------- #
 # Output
 # --------------------------------------------------------------------------- #
 def save_outputs(args, X_wave, meta, length, C, latent, loss_curve, space, labels,
-                 emb2d, proj_name, m, valid):
+                 emb2d, proj_name, m, m_embed, valid):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -421,7 +531,7 @@ def save_outputs(args, X_wave, meta, length, C, latent, loss_curve, space, label
     ax.set_xlabel(f'{proj_name}-1'); ax.set_ylabel(f'{proj_name}-2')
     title = f'{proj_name} embedding — {args.algorithm} on {args.feature}'
     if 'silhouette' in m:
-        title += f'  sil={m["silhouette"]:.3f}'
+        title += f'  sil(latent)={m["silhouette"]:.3f}'
     ax.set_title(title); ax.legend(markerscale=2, fontsize=9, loc='best')
     ax.grid(alpha=0.2); plt.tight_layout()
     plt.savefig(os.path.join(args.out, 'latent_scatter.png'), dpi=150); plt.close()
@@ -462,6 +572,9 @@ def save_outputs(args, X_wave, meta, length, C, latent, loss_curve, space, label
 
     np.save(os.path.join(args.out, 'latent_codes.npy'), latent)
 
+    # physical characterization (spectra + parametric features)
+    char_lines = characterize(args, X_wave, meta, length, labels, valid, plt, color)
+
     # summary
     lines = [
         "AE Deep Latent-Space Clustering — summary",
@@ -482,13 +595,17 @@ def save_outputs(args, X_wave, meta, length, C, latent, loss_curve, space, label
         cnt = int(np.sum(labels == l))
         lines.append(f"  C{l}: {cnt}  ({100*cnt/len(labels):.1f}%)")
     lines.append("")
-    lines.append("quality metrics:")
+    lines.append("quality metrics (report the LATENT one in papers):")
     if m:
-        lines.append(f"  silhouette        : {m['silhouette']:.4f}  (higher=better, max 1)")
-        lines.append(f"  calinski_harabasz : {m['calinski_harabasz']:.1f}  (higher=better)")
-        lines.append(f"  davies_bouldin    : {m['davies_bouldin']:.4f}  (lower=better)")
+        lines.append(f"  silhouette (latent)     : {m['silhouette']:.4f}  (higher=better, max 1)")
+        lines.append(f"  calinski_harabasz       : {m['calinski_harabasz']:.1f}  (higher=better)")
+        lines.append(f"  davies_bouldin          : {m['davies_bouldin']:.4f}  (lower=better)")
     else:
         lines.append("  (need >= 2 non-noise clusters)")
+    if m_embed:
+        lines.append(f"  silhouette ({proj_name}, optimistic): {m_embed['silhouette']:.4f}  "
+                     f"(inflated by {proj_name}; for visualization only)")
+    lines += char_lines
     summary = "\n".join(lines)
     with open(os.path.join(args.out, 'summary.txt'), 'w') as f:
         f.write(summary + "\n")
@@ -539,6 +656,8 @@ def main():
                    help='hdbscan/dbscan: lower = less conservative')
     g.add_argument('--min-cluster-size', type=int, default=30, dest='min_cluster_size',
                    help='hdbscan: lower = more clusters')
+    g.add_argument('--scan-k', type=int, default=0, dest='scan_k',
+                   help='sweep KMeans k=2..N on the latent and report silhouette, then continue')
     args = ap.parse_args()
 
     try:
@@ -546,16 +665,27 @@ def main():
     except ImportError:
         raise SystemExit("PyTorch required.  pip install torch")
 
+    from sklearn.preprocessing import StandardScaler
+
     X, X_wave, meta, length, C = load_waveforms(
         args.input, args.channel, args.max_waveforms,
         args.fixed_length, args.keep_pretrigger, args.feature)
     latent, loss_curve = train(args, X, length, C)
     latent_diagnostic(latent)
+    if args.scan_k >= 2:
+        scan_k(latent, args.scan_k)
     emb2d, proj_name = embed_2d(args, latent)
     space, labels = cluster(args, latent, emb2d)
-    m, valid = compute_metrics(space, labels)
+
+    # Honest metrics on the latent space (comparable across runs); the
+    # embedding-space silhouette is reported separately and flagged optimistic.
+    m, valid = metrics_on(StandardScaler().fit_transform(latent), labels)
+    m_embed = None
+    if args.algorithm in ('hdbscan', 'dbscan') and args.density_space == 'embed':
+        m_embed, _ = metrics_on(StandardScaler().fit_transform(emb2d), labels)
+
     save_outputs(args, X_wave, meta, length, C, latent, loss_curve,
-                 space, labels, emb2d, proj_name, m, valid)
+                 space, labels, emb2d, proj_name, m, m_embed, valid)
 
 
 if __name__ == '__main__':
