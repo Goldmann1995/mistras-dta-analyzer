@@ -3,7 +3,7 @@ import type {
   FileInfo, HitsResponse, WaveformData, FFTResult,
   ChannelStats, ScatterData, HistogramData, PluginInfo, ExportOptions,
   CWTResult, DispersionResult, GroupVelocityResult, EMDResult, LambDispersionResult,
-  SourceLocationResult, FilterResult,
+  SourceLocationResult, FilterResult, ClusterResult,
 } from '../types';
 
 const api = axios.create({
@@ -130,6 +130,22 @@ export async function getSourceLocation(
 
 export async function getPlugins(): Promise<PluginInfo[]> {
   const { data } = await api.get<PluginInfo[]>('/api/plugins/');
+  return data;
+}
+
+export async function runClustering(
+  fileId: string,
+  config: {
+    features: string[];
+    algorithm?: string;
+    n_clusters?: number;
+    eps?: number;
+    min_samples?: number;
+    max_tree_depth?: number;
+    channel?: number;
+  },
+): Promise<ClusterResult> {
+  const { data } = await api.post<ClusterResult>(`/api/analysis/${fileId}/cluster`, config);
   return data;
 }
 

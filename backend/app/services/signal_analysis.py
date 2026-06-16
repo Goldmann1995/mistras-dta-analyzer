@@ -575,3 +575,200 @@ def compute_source_locations(
         'sensor_positions': {str(k): v for k, v in sensor_positions.items()},
         'velocity': velocity,
     }
+
+
+def compute_clustering(
+    rec_data,
+    features: list[str],
+    algorithm: str = 'kmeans',
+    n_clusters: int = 3,
+    eps: float = 0.5,
+    min_samples: int = 5,
+    max_tree_depth: int = 5,
+    channel: Optional[int] = None,
+) -> dict:
+    from sklearn.cluster import KMeans, DBSCAN
+    from sklearn.mixture import GaussianMixture
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+
+    field_resolve = {
+        'time': 'SSSSSSSS.mmmuuun',
+        'amplitude': 'AMP', 'energy': 'ENER', 'duration': 'DURATION',
+        'rise': 'RISE', 'counts': 'COUN', 'peak_counts': 'PCNTS',
+        'rms': 'RMS', 'asl': 'ASL', 'avg_frequency': 'A-FRQ',
+        'rev_frequency': 'R-FRQ', 'init_frequency': 'I-FRQ',
+        'abs_energy': 'ABS-ENERGY', 'signal_strength': 'SIG STRENGTH',
+        'peak_frequency': 'P-FRQ', 'freq_centroid': 'FRQ-C',
+    }
+
+    if len(rec_data) == 0:
+        raise ValueError("No data to cluster")
+
+    mask = np.ones(len(rec_data), dtype=bool)
+    if channel is not None:
+        mask &= rec_data['CH'] == channel
+    filtered = rec_data[mask]
+
+    if len(filtered) < n_clusters:
+        raise ValueError(f"Not enough data points ({len(filtered)}) for {n_clusters} clusters")
+
+    resolved_features = []
+    feature_labels = []
+    for f in features:
+        rf = field_resolve.get(f, f)
+        if rf in filtered.dtype.names:
+            resolved_features.append(rf)
+            feature_labels.append(f)
+
+    if len(resolved_features) < 2:
+        raise ValueError("Need at least 2 valid features for clustering")
+
+    X_raw = np.column_stack([filtered[f].astype(float) for f in resolved_features])
+
+    valid_mask = np.all(np.isfinite(X_raw), axis=1)
+    X_raw = X_raw[valid_mask]
+    filtered_indices = np.where(mask)[0][valid_mask]
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X_raw)
+
+    if algorithm == 'kmeans':
+        model = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        labels = model.fit_predict(X)
+    elif algorithm == 'dbscan':
+        model = DBSCAN(eps=eps, min_samples=min_samples)
+        labels = model.fit_predict(X)
+        n_clusters = len(set(labels) - {-1})
+    elif algorithm == 'gmm':
+        model = GaussianMixture(n_components=n_clusters, random_state=42, n_init=3)
+        labels = model.fit_predict(X)
+    else:
+        raise ValueError(f"Unknown algorithm: {algorithm}")
+
+    unique_labels = sorted(set(labels))
+    valid_labels = [l for l in unique_labels if l >= 0]
+
+    metrics = {}
+    if len(valid_labels) >= 2:
+        non_noise = labels >= 0
+        if np.sum(non_noise) > len(valid_labels):
+            metrics['silhouette'] = float(silhouette_score(X[non_noise], labels[non_noise]))
+            metrics['calinski_harabasz'] = float(calinski_harabasz_score(X[non_noise], labels[non_noise]))
+            metrics['davies_bouldin'] = float(davies_bouldin_score(X[non_noise], labels[non_noise]))
+
+    tree_rules = []
+    tree_feature_importance = []
+    tree_accuracy = 0.0
+
+    non_noise_mask = labels >= 0
+    if np.sum(non_noise_mask) > 10 and len(valid_labels) >= 2:
+        dt = DecisionTreeClassifier(
+            max_depth=max_tree_depth,
+            min_samples_leaf=max(5, len(X) // 100),
+            random_state=42,
+        )
+        dt.fit(X_raw[non_noise_mask], labels[non_noise_mask])
+        tree_accuracy = float(dt.score(X_raw[non_noise_mask], labels[non_noise_mask]))
+
+        importances = dt.feature_importances_
+        tree_feature_importance = [
+            {'feature': feature_labels[i], 'importance': float(importances[i])}
+            for i in range(len(feature_labels))
+        ]
+        tree_feature_importance.sort(key=lambda x: x['importance'], reverse=True)
+
+        tree_rules = _extract_tree_rules(dt, feature_labels, valid_labels)
+
+    cluster_stats = []
+    for label in valid_labels:
+        cmask = labels == label
+        count = int(np.sum(cmask))
+        stats: dict = {'label': int(label), 'count': count, 'percentage': round(100.0 * count / len(labels), 1)}
+        for i, fname in enumerate(feature_labels):
+            vals = X_raw[cmask, i]
+            stats[fname] = {
+                'mean': float(np.mean(vals)),
+                'std': float(np.std(vals)),
+                'min': float(np.min(vals)),
+                'max': float(np.max(vals)),
+                'median': float(np.median(vals)),
+            }
+        cluster_stats.append(stats)
+
+    noise_count = int(np.sum(labels == -1))
+
+    scatter_x_idx = 0
+    scatter_y_idx = 1 if len(feature_labels) > 1 else 0
+    scatter_data = []
+    step = max(1, len(X_raw) // 5000)
+    for i in range(0, len(X_raw), step):
+        scatter_data.append({
+            'x': float(X_raw[i, scatter_x_idx]),
+            'y': float(X_raw[i, scatter_y_idx]),
+            'cluster': int(labels[i]),
+            'index': int(filtered_indices[i]),
+        })
+
+    return {
+        'algorithm': algorithm,
+        'n_clusters': len(valid_labels),
+        'total_points': int(len(labels)),
+        'noise_points': noise_count,
+        'features': feature_labels,
+        'scatter_x': feature_labels[scatter_x_idx],
+        'scatter_y': feature_labels[scatter_y_idx],
+        'scatter_data': scatter_data,
+        'cluster_stats': cluster_stats,
+        'metrics': metrics,
+        'tree_accuracy': tree_accuracy,
+        'tree_rules': tree_rules,
+        'tree_feature_importance': tree_feature_importance,
+    }
+
+
+def _extract_tree_rules(
+    tree,
+    feature_names: list[str],
+    class_labels: list[int],
+) -> list[dict]:
+    from sklearn.tree import _tree
+
+    tree_ = tree.tree_
+    rules = []
+
+    def recurse(node, path):
+        if tree_.feature[node] == _tree.TREE_UNDEFINED:
+            values = tree_.value[node][0]
+            predicted = int(class_labels[int(np.argmax(values))])
+            total = int(np.sum(values))
+            confidence = float(np.max(values) / total) if total > 0 else 0
+            rules.append({
+                'conditions': list(path),
+                'cluster': predicted,
+                'samples': total,
+                'confidence': round(confidence, 3),
+                'rule_text': _format_rule(path, predicted, confidence),
+            })
+            return
+
+        fname = feature_names[tree_.feature[node]]
+        threshold = float(tree_.threshold[node])
+
+        recurse(tree_.children_left[node],
+                path + [{'feature': fname, 'op': '<=', 'value': round(threshold, 4)}])
+        recurse(tree_.children_right[node],
+                path + [{'feature': fname, 'op': '>', 'value': round(threshold, 4)}])
+
+    recurse(0, [])
+
+    rules.sort(key=lambda r: r['samples'], reverse=True)
+    return rules
+
+
+def _format_rule(conditions: list[dict], cluster: int, confidence: float) -> str:
+    if not conditions:
+        return f"→ Cluster {cluster} (conf: {confidence:.1%})"
+    parts = [f"{c['feature']} {c['op']} {c['value']}" for c in conditions]
+    return f"IF {' AND '.join(parts)} → Cluster {cluster} (conf: {confidence:.1%})"

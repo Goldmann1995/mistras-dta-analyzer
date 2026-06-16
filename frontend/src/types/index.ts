@@ -208,3 +208,58 @@ export interface FilterResult {
   channel: number;
   sample_rate: number;
 }
+
+export interface ClusterScatterPoint {
+  x: number;
+  y: number;
+  cluster: number;
+  index: number;
+}
+
+export interface ClusterFeatureStats {
+  mean: number;
+  std: number;
+  min: number;
+  max: number;
+  median: number;
+}
+
+export interface ClusterStat {
+  label: number;
+  count: number;
+  percentage: number;
+  [feature: string]: number | ClusterFeatureStats;
+}
+
+export interface TreeRule {
+  conditions: { feature: string; op: string; value: number }[];
+  cluster: number;
+  samples: number;
+  confidence: number;
+  rule_text: string;
+}
+
+export interface FeatureImportance {
+  feature: string;
+  importance: number;
+}
+
+export interface ClusterResult {
+  algorithm: string;
+  n_clusters: number;
+  total_points: number;
+  noise_points: number;
+  features: string[];
+  scatter_x: string;
+  scatter_y: string;
+  scatter_data: ClusterScatterPoint[];
+  cluster_stats: ClusterStat[];
+  metrics: {
+    silhouette?: number;
+    calinski_harabasz?: number;
+    davies_bouldin?: number;
+  };
+  tree_accuracy: number;
+  tree_rules: TreeRule[];
+  tree_feature_importance: FeatureImportance[];
+}
