@@ -8,6 +8,7 @@ from ..services import dta_service
 from ..services.signal_analysis import (
     compute_cwt, compute_group_velocity_dispersion, compute_cross_channel_velocity,
     compute_emd, compute_lamb_dispersion, compute_source_locations, apply_filter,
+    compute_clustering,
 )
 
 
@@ -15,6 +16,16 @@ class SensorConfig(BaseModel):
     positions: dict[str, list[float]]
     velocity: float = 5400.0
     time_window: float = 0.001
+
+
+class ClusterConfig(BaseModel):
+    features: list[str]
+    algorithm: str = 'kmeans'
+    n_clusters: int = 3
+    eps: float = 0.5
+    min_samples: int = 5
+    max_tree_depth: int = 5
+    channel: Optional[int] = None
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
@@ -156,6 +167,28 @@ async def get_source_location(file_id: str, config: SensorConfig):
         )
     except KeyError:
         raise HTTPException(404, "File not found")
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/{file_id}/cluster")
+async def cluster_analysis(file_id: str, config: ClusterConfig):
+    try:
+        cache = dta_service._file_cache[file_id]
+        return compute_clustering(
+            cache['rec'],
+            features=config.features,
+            algorithm=config.algorithm,
+            n_clusters=config.n_clusters,
+            eps=config.eps,
+            min_samples=config.min_samples,
+            max_tree_depth=config.max_tree_depth,
+            channel=config.channel,
+        )
+    except KeyError:
+        raise HTTPException(404, "File not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(400, str(e))
 

@@ -7,6 +7,7 @@ import HitTable from './components/HitTable';
 import WaveformViewer from './components/WaveformViewer';
 import FilterView from './components/FilterView';
 import ParametricCharts from './components/ParametricCharts';
+import ClusterView from './components/ClusterView';
 import ChannelView from './components/ChannelView';
 import ExportPanel from './components/ExportPanel';
 import PluginPanel from './components/PluginPanel';
@@ -45,6 +46,7 @@ function App() {
       case 'filter': return <FilterView file={file} />;
       case 'wavelet': return <WaveletView file={file} />;
       case 'charts': return <ParametricCharts file={file} />;
+      case 'cluster': return <ClusterView file={file} />;
       case 'channels': return <ChannelView file={file} />;
       case 'sensor': return <SensorView file={file} />;
       case 'export': return <ExportPanel file={file} />;
