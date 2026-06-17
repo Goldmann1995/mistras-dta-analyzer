@@ -18,6 +18,11 @@ def pytest_addoption(parser):
 
 
 def pytest_generate_tests(metafunc):
+    # Only parametrize tests that actually request these fixtures, so other
+    # test modules (e.g. the analysis pipeline tests) are not affected.
+    if not {"dta_file", "ref_file"} <= set(metafunc.fixturenames):
+        return
+
     dta_dir = metafunc.config.getoption('--dtaDir')
     ref_dir = metafunc.config.getoption('--refDir')
 
