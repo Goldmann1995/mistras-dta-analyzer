@@ -48,7 +48,9 @@ def _wavelet_denoise(v, wavelet="db4", level=0, mode="soft"):
     n = len(v)
     if n < 8:
         return v
-    v = np.asarray(v, dtype=np.float64)
+    # get_waveform_data returns a read-only np.frombuffer view; pywt needs a
+    # writable, contiguous array, so copy with np.array (not np.asarray).
+    v = np.array(v, dtype=np.float64)
     w = pywt.Wavelet(wavelet)
     max_level = pywt.dwt_max_level(n, w.dec_len)
     lvl = max_level if level <= 0 else min(level, max_level)
