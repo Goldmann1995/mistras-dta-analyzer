@@ -1,0 +1,21 @@
+AE Hierarchical (two-stage) clustering ¡ª summary
+================================================
+input        : yang.DTA
+channel      : all
+denoise      : wavelet    feature: fft (1 ch)
+model        : cae  latent=16  waveforms=5000
+include_hit_features: True
+
+STAGE 1: KMeans k=2
+  k-scan: k2=0.244, k3=0.137, k4=0.110, k5=0.111  (best=2)
+
+STAGE-1 cluster 0: n=3094  peak_freq=101.3kHz  centroid=189.6kHz  energy=4.52  dur=239us
+    sub k-scan: k2=0.121, k3=0.110, k4=0.095, k5=0.091  (best=2)
+      sub 0.0: n=1704  peak_freq=111.2  centroid=201.6  energy=3.94  dur=259  RA=0.822
+      sub 0.1: n=1390  peak_freq=89.1  centroid=175.0  energy=5.22  dur=215  RA=1.000
+
+STAGE-1 cluster 1: n=1906  peak_freq=250.6kHz  centroid=249.6kHz  energy=3.60  dur=150us
+    sub k-scan: k2=0.128, k3=0.102, k4=0.098, k5=0.091  (best=2)
+      sub 1.0: n=776  peak_freq=288.4  centroid=263.5  energy=0.32  dur=43  RA=0.362
+      sub 1.1: n=1130  peak_freq=224.7  centroid=240.0  energy=5.85  dur=224  RA=0.687
+

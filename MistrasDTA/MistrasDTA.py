@@ -20,6 +20,7 @@ CHID_to_str = {
     19: 'I-FRQ',
     20: 'SIG STRENGTH',
     21: 'ABS-ENERGY',
+    22: 'UNKNOWN-22',
     23: 'FRQ-C',
     24: 'P-FRQ'}
 
@@ -38,6 +39,7 @@ CHID_byte_len = {
     19: 2,
     20: 4,
     21: 4,
+    22: 0,
     23: 2,
     24: 2}
 
@@ -104,23 +106,29 @@ def read_bin(file, skip_wfm=False):
 
                 # Look up byte length and read data values
                 for CHID in CHID_list:
-                    b = CHID_byte_len[CHID]
+                    b = CHID_byte_len.get(CHID)
+                    label = CHID_to_str.get(CHID)
+                    if b is None:
+                        logging.warning(
+                            "Unknown CHID %s encountered; assuming 2-byte raw field",
+                            CHID)
+                        b = 2
 
-                    if CHID_to_str[CHID] == 'RMS':
+                    if label == 'RMS':
                         [v] = struct.unpack('<H', data.read(b))
                         v = v/5000
 
                     # DURATION
-                    elif CHID_to_str[CHID] == 'DURATION':
+                    elif label == 'DURATION':
                         [v] = struct.unpack('<i', data.read(b))
 
                     # SIG STRENGTH
-                    elif CHID_to_str[CHID] == 'SIG STRENGTH':
+                    elif label == 'SIG STRENGTH':
                         [v] = struct.unpack('<i', data.read(b))
                         v = v*3.05
 
                     # ABS-ENERGY
-                    elif CHID_to_str[CHID] == 'ABS-ENERGY':
+                    elif label == 'ABS-ENERGY':
                         [v] = struct.unpack('<f', data.read(b))
                         v = v*9.31e-4
 
@@ -130,16 +138,32 @@ def read_bin(file, skip_wfm=False):
                     elif b == 2:
                         [v] = struct.unpack('<H', data.read(b))
 
+                    elif b == 4:
+                        [v] = struct.unpack('<I', data.read(b))
+
+                    else:
+                        v = data.read(b)
+
                     LEN = LEN-b
                     record.append(v)
 
                 # Parmetric channels
+                if LEN < 0:
+                    logging.warning(
+                        "AE hit record length mismatch: LEN=%d after reading channels; clamping to 0",
+                        LEN)
+                    LEN = 0
                 data.read(LEN)
 
                 rec.append(record)
 
             elif b1 == 7:
                 logging.info("User Comments/Test Label:")
+                if LEN < 0:
+                    logging.warning(
+                        "Comment record length negative: LEN=%d; clamping to 0",
+                        LEN)
+                    LEN = 0
                 [m] = struct.unpack('<{0}s'.format(LEN), data.read(LEN))
                 logging.info(m.decode("ascii").strip('\x00'))
 
@@ -159,6 +183,11 @@ def read_bin(file, skip_wfm=False):
                 # PVERN
                 data.read(2)
                 LEN = LEN-2
+                if LEN < 0:
+                    logging.warning(
+                        "ASCII product definition length negative: LEN=%d; clamping to 0",
+                        LEN)
+                    LEN = 0
 
                 [m] = struct.unpack('<{0}s'.format(LEN), data.read(LEN))
                 logging.info(m[:-3].decode('ascii'))
@@ -215,6 +244,11 @@ def read_bin(file, skip_wfm=False):
                         logging.debug(
                             "\tSUBID {0} not yet implemented!".format(SUBID))
 
+                    if LSUB < 0:
+                        logging.warning(
+                            "Hardware setup subrecord length negative: LSUB=%d; clamping to 0",
+                            LSUB)
+                        LSUB = 0
                     data.read(LSUB)
 
                 # Convert hardware settings to record array
@@ -223,6 +257,11 @@ def read_bin(file, skip_wfm=False):
 
             elif b1 == 99:
                 logging.info("Time and Date of Test Start:")
+                if LEN < 0:
+                    logging.warning(
+                        "Date record length negative: LEN=%d; clamping to 0",
+                        LEN)
+                    LEN = 0
                 [m] = struct.unpack('<{0}s'.format(LEN), data.read(LEN))
                 m = m.decode("ascii").strip('\x00')
                 logging.info(m)
@@ -259,6 +298,11 @@ def read_bin(file, skip_wfm=False):
                 MaxCounts = 32768.0
                 AmpScaleFactor = MaxInput/(Gain*MaxCounts)
 
+                if LEN < 0:
+                    logging.warning(
+                        "Waveform data length negative: LEN=%d; clamping to 0",
+                        LEN)
+                    LEN = 0
                 s = np.frombuffer(data.read(LEN), dtype=np.int16)
 
                 # Append waveform to wfm with data stored as a byte string

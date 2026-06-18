@@ -17,6 +17,9 @@ give poorly separated clusters. Use --feature both (default) or fft.
 Outputs (saved into --out):
     loss_curve.png        training reconstruction loss per epoch
     latent_scatter.png    2D embedding, colored by cluster
+    cluster_spectra.png   mean cluster frequency spectra (linear magnitude)
+    cluster_amplitude_vs_freq.png  AE hit amplitude (dB) vs frequency scatter, colored by cluster
+    cluster_timeline.png  event timestamps colored by cluster
     prototypes.png        medoid (representative) waveform of each cluster
     cluster_labels.csv    per-waveform: index, channel, time, cluster, latent
     latent_codes.npy      raw latent matrix (N x latent_dim)
@@ -61,6 +64,91 @@ def _extract_feats(rec_row):
 
 
 # --------------------------------------------------------------------------- #
+# Denoising / preprocessing
+# --------------------------------------------------------------------------- #
+# AE waveforms carry electrical/background noise that the autoencoder would
+# otherwise spend capacity reconstructing, smearing the clusters. We clean each
+# raw voltage trace *before* padding and peak-normalization so both the time and
+# FFT feature channels see the denoised signal.
+
+def _wavelet_denoise(v, wavelet='db4', level=0, mode='soft'):
+    """Discrete-wavelet denoising (VisuShrink): decompose, shrink the detail
+    coefficients toward zero using a noise level estimated from the finest
+    band (MAD), then reconstruct. This is the standard AE denoiser — it keeps
+    transient bursts while suppressing stationary background noise."""
+    import pywt
+    n = len(v)
+    if n < 8:
+        return v
+    # get_waveform_data returns a read-only np.frombuffer view; pywt needs a
+    # writable, contiguous float array.
+    v = np.array(v, dtype=np.float64)
+    w = pywt.Wavelet(wavelet)
+    max_level = pywt.dwt_max_level(n, w.dec_len)
+    lvl = max_level if level <= 0 else min(level, max_level)
+    if lvl < 1:
+        return v
+    coeffs = pywt.wavedec(v, w, mode='periodization', level=lvl)
+    # Robust noise sigma from the finest detail coefficients (median abs dev).
+    detail = coeffs[-1]
+    sigma = np.median(np.abs(detail)) / 0.6745 if detail.size else 0.0
+    if sigma > 0:
+        uthresh = sigma * np.sqrt(2.0 * np.log(n))      # universal threshold
+        coeffs[1:] = [pywt.threshold(c, uthresh, mode=mode) for c in coeffs[1:]]
+    rec = pywt.waverec(coeffs, w, mode='periodization')
+    return rec[:n].astype(np.float32)
+
+
+def _bandpass(v, sr, low_hz, high_hz, order=4):
+    """Zero-phase Butterworth bandpass. Drops out-of-band content: low-frequency
+    drift/DC and high-frequency electrical hash outside the AE sensor band."""
+    from scipy.signal import butter, sosfiltfilt
+    n = len(v)
+    if n < 3 * (order + 1):
+        return v
+    nyq = sr / 2.0
+    low = max(low_hz / nyq, 1e-4)
+    high = min(high_hz / nyq, 0.999)
+    if low >= high:
+        return v
+    sos = butter(order, [low, high], btype='bandpass', output='sos')
+    pad = min(n - 1, 3 * (sos.shape[0] + 1))
+    return sosfiltfilt(sos, v, padlen=pad).astype(np.float32)
+
+
+def make_denoiser(args):
+    """Build a (v, sr) -> v_clean callable from the CLI args, or None for
+    --denoise none. Bandpass runs first (set the band), then wavelet shrinkage."""
+    if getattr(args, 'denoise', 'none') == 'none':
+        return None
+
+    do_band = 'bandpass' in args.denoise
+    do_wave = 'wavelet' in args.denoise
+    low_hz = args.denoise_band[0] * 1000.0       # kHz -> Hz
+    high_hz = args.denoise_band[1] * 1000.0
+
+    if do_wave:
+        try:
+            import pywt  # noqa: F401
+        except ImportError:
+            print("      [warning] PyWavelets not installed; wavelet denoising "
+                  "disabled.  pip install PyWavelets")
+            do_wave = False
+            if not do_band:
+                return None
+
+    def denoiser(v, sr):
+        if do_band:
+            v = _bandpass(v, sr, low_hz, high_hz, order=args.denoise_order)
+        if do_wave:
+            v = _wavelet_denoise(v, wavelet=args.denoise_wavelet,
+                                 level=args.denoise_level, mode=args.denoise_mode)
+        return v
+
+    return denoiser
+
+
+# --------------------------------------------------------------------------- #
 # Data preparation
 # --------------------------------------------------------------------------- #
 def round_up_multiple(n, m):
@@ -95,11 +183,13 @@ def _waveform_to_features(v, L, feature):
 
 
 def load_waveforms(dta_path, channel, max_waveforms, fixed_length,
-                   keep_pretrigger, feature):
+                   keep_pretrigger, feature, denoiser=None):
     """Return (X, X_wave, meta, L, C).
 
     X      : model input (N, C, L) for the chosen feature
     X_wave : peak-normalized time-domain waveforms (N, L) for plotting
+    denoiser: optional (v, sr) -> v_clean callable applied to each raw trace
+              before padding/normalization.
     """
     print(f"[1/5] Reading {dta_path} ...")
     rec, wfm = read_bin(dta_path)
@@ -143,6 +233,7 @@ def load_waveforms(dta_path, channel, max_waveforms, fixed_length,
                  else None)
 
     feats, waves, meta = [], [], []
+    noise_ratios = []
     for i in idx_all:
         row = wfm[i]
         t, V = get_waveform_data(row)
@@ -151,6 +242,13 @@ def load_waveforms(dta_path, channel, max_waveforms, fixed_length,
             V = V[trim:]
         if len(V) == 0:
             continue
+        if denoiser is not None:
+            V_raw = V
+            V = denoiser(V, float(row['SRATE']))
+            # fraction of signal energy removed as "noise" (for the run report)
+            denom = float(np.sum(V_raw ** 2))
+            if denom > 0:
+                noise_ratios.append(float(np.sum((V_raw - V) ** 2) / denom))
         v = V[:L] if len(V) >= L else np.pad(V, (0, L - len(V)))
         peak = np.max(np.abs(v))
         if peak > 0:
@@ -181,6 +279,9 @@ def load_waveforms(dta_path, channel, max_waveforms, fixed_length,
     print(f"      using {X.shape[0]} waveforms, length={L}, feature={feature} "
           f"({C} channel{'s' if C > 1 else ''}), "
           f"pretrigger={'kept' if keep_pretrigger else 'trimmed'}")
+    if noise_ratios:
+        print(f"      denoising removed on avg {100*np.mean(noise_ratios):.1f}% "
+              f"of per-waveform energy (treated as noise)")
     return X, X_wave, meta, L, C
 
 
@@ -320,17 +421,22 @@ def train(args, X, length, C):
 # --------------------------------------------------------------------------- #
 # Embedding + clustering
 # --------------------------------------------------------------------------- #
-def embed_2d(args, latent):
+def embed_projection(args, latent):
     from sklearn.decomposition import PCA
     N = latent.shape[0]
-    if latent.shape[1] <= 2:
-        p = latent if latent.shape[1] == 2 else np.column_stack([latent[:, 0], np.zeros(N)])
-        return p, 'latent'
+    dim = int(args.projection_dim)
+
+    if latent.shape[1] <= dim:
+        z = latent
+        if latent.shape[1] < dim:
+            pad = np.zeros((N, dim - latent.shape[1]), dtype=latent.dtype)
+            z = np.column_stack([latent, pad])
+        return z, 'latent'
 
     if args.projection == 'umap':
         try:
             import umap
-            reducer = umap.UMAP(n_components=2, random_state=42,
+            reducer = umap.UMAP(n_components=dim, random_state=42,
                                 n_neighbors=args.umap_neighbors, min_dist=args.umap_mindist)
             return reducer.fit_transform(latent), 'UMAP'
         except ImportError:
@@ -341,12 +447,31 @@ def embed_2d(args, latent):
     if args.projection == 'tsne':
         from sklearn.manifold import TSNE
         perp = float(min(30, max(2, N // 4), N - 1))
-        return TSNE(2, random_state=42, perplexity=perp, init='pca').fit_transform(latent), 't-SNE'
+        return TSNE(dim, random_state=42, perplexity=perp, init='pca').fit_transform(latent), 't-SNE'
 
-    return PCA(2, random_state=42).fit_transform(latent), 'PCA'
+    return PCA(dim, random_state=42).fit_transform(latent), 'PCA'
 
 
-def cluster(args, latent, emb2d):
+def _hit_feature_matrix(meta):
+    feats = []
+    for md in meta:
+        feat = md.get('feat', {})
+        amp = feat.get('amplitude_dB')
+        freq = feat.get('peak_freq_kHz', feat.get('centroid_freq_kHz', feat.get('avg_freq_kHz')))
+        if amp is None or freq is None:
+            feats.append((np.nan, np.nan))
+        else:
+            feats.append((float(amp), float(freq)))
+    F = np.array(feats, dtype=np.float32)
+    if np.all(np.isnan(F)):
+        return None
+    col_mean = np.nanmean(F, axis=0)
+    inds = np.isnan(F)
+    F[inds] = np.take(col_mean, np.where(inds)[1])
+    return F
+
+
+def cluster(args, latent, emb2d, meta=None):
     """Return (space, labels) where `space` is the array clustering ran on
     (used for metrics). KMeans/GMM use the latent; density methods use the
     2D embedding by default (curse-of-dimensionality + matches AE literature
@@ -358,6 +483,16 @@ def cluster(args, latent, emb2d):
     print(f"[3/5] Clustering with {args.algorithm} ...")
     Zlat = StandardScaler().fit_transform(latent)
     Zemb = StandardScaler().fit_transform(emb2d)
+
+    if args.include_hit_features and meta is not None:
+        aux = _hit_feature_matrix(meta)
+        if aux is not None:
+            aux = StandardScaler().fit_transform(aux)
+            Zlat = np.column_stack([Zlat, aux])
+            Zemb = np.column_stack([Zemb, aux])
+            print("      augmenting clustering space with AE amplitude and peak-frequency features")
+        else:
+            print("      [warning] no AE amplitude/peak frequency features available to augment clustering")
 
     density = args.algorithm in ('hdbscan', 'dbscan')
     use_embed = density and args.density_space == 'embed'
@@ -453,6 +588,93 @@ def characterize(args, X_wave, meta, length, labels, valid, plt, color):
     ax.legend(fontsize=9); ax.grid(alpha=0.25); plt.tight_layout()
     plt.savefig(os.path.join(args.out, 'cluster_spectra.png'), dpi=150); plt.close()
 
+    # ----- AE hit amplitude vs. frequency scatter by cluster -----
+    freqs = []
+    amps = []
+    clus = []
+    for md, label in zip(meta, labels):
+        feat = md.get('feat', {})
+        if 'amplitude_dB' not in feat:
+            continue
+        freq = next((feat[k] for k in ('peak_freq_kHz', 'centroid_freq_kHz', 'avg_freq_kHz') if k in feat), None)
+        if freq is None:
+            continue
+        freqs.append(float(freq))
+        amps.append(float(feat['amplitude_dB']))
+        clus.append(label)
+
+    if freqs:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        freqs = np.array(freqs)
+        amps = np.array(amps)
+        clus = np.array(clus)
+        for l in sorted(set(clus)):
+            mask = clus == l
+            ax.scatter(freqs[mask], amps[mask], s=18, alpha=0.7,
+                       color=color(l), label=('noise' if l == -1 else f'C{l} (n={int(np.sum(mask))})'))
+        ax.set_xlabel('Frequency (kHz)'); ax.set_ylabel('Amplitude (dB)')
+        ax.set_title('AE hit amplitude vs frequency by cluster')
+        ax.legend(markerscale=1.5, fontsize=9, loc='best')
+        ax.grid(alpha=0.25); plt.tight_layout()
+        plt.savefig(os.path.join(args.out, 'cluster_amplitude_vs_freq.png'), dpi=150); plt.close()
+    else:
+        print('      [skip] no amplitude_dB/frequency hit features available for scatter plot')
+
+    # ----- AE hit amplitude over time by cluster -----
+    times = np.array([md['time'] for md in meta], dtype=float)
+    amps = np.array([md.get('feat', {}).get('amplitude_dB', np.nan) for md in meta], dtype=float)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for l in sorted(set(labels)):
+        mask = labels == l
+        valid_mask = mask & ~np.isnan(amps)
+        if np.sum(valid_mask) > 0:
+            ax.scatter(times[valid_mask], amps[valid_mask], s=24, alpha=0.7,
+                       color=color(l), edgecolors='none',
+                       label=('noise' if l == -1 else f'C{l} (n={int(np.sum(mask))})'))
+    ax.set_xlabel('Time (s)'); ax.set_ylabel('Amplitude (dB)')
+    ax.set_title('AE hit amplitude vs time by cluster')
+    ax.legend(markerscale=1.0, fontsize=9, loc='best')
+    ax.grid(alpha=0.25)
+    plt.tight_layout()
+    plt.savefig(os.path.join(args.out, 'cluster_timeline.png'), dpi=150); plt.close()
+
+
+    # ----- AE hit time vs. peak frequency scatter by cluster -----
+    times_freq = []
+    freqs_freq = []
+    clus_freq = []
+    for md, label in zip(meta, labels):
+        feat = md.get('feat', {})
+        # 获取峰频 (优先 peak_freq，其次 centroid，最后 avg)
+        freq = next((feat[k] for k in ('peak_freq_kHz', 'centroid_freq_kHz', 'avg_freq_kHz') if k in feat), None)
+        if freq is None:
+            continue
+        times_freq.append(float(md['time']))
+        freqs_freq.append(float(freq))
+        clus_freq.append(label)
+        
+    if times_freq:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        times_freq = np.array(times_freq)
+        freqs_freq = np.array(freqs_freq)
+        clus_freq = np.array(clus_freq)
+        for l in sorted(set(clus_freq)):
+            mask = clus_freq == l
+            ax.scatter(times_freq[mask], freqs_freq[mask], s=24, alpha=0.7,
+                       color=color(l), edgecolors='none',
+                       label=('noise' if l == -1 else f'C{l} (n={int(np.sum(mask))})'))
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Peak Frequency (kHz)')
+        ax.set_title('AE hit time vs peak frequency by cluster')
+        ax.legend(markerscale=1.0, fontsize=9, loc='best')
+        ax.grid(alpha=0.25)
+        plt.tight_layout()
+        plt.savefig(os.path.join(args.out, 'cluster_time_vs_freq.png'), dpi=150)
+        plt.close()
+    else:
+        print('      [skip] no peak frequency features available for time vs freq plot')
+
     # ----- parametric feature table per cluster -----
     keys = [lbl for _, lbl in FEATURE_FIELDS
             if any(lbl in md.get('feat', {}) for md in meta)]
@@ -521,13 +743,25 @@ def save_outputs(args, X_wave, meta, length, C, latent, loss_curve, space, label
     plt.tight_layout()
     plt.savefig(os.path.join(args.out, 'loss_curve.png'), dpi=150); plt.close()
 
-    # 2D embedding scatter
-    fig, ax = plt.subplots(figsize=(8, 7))
+    # projection scatter
+    if emb2d.shape[1] == 3:
+        fig = plt.figure(figsize=(8, 7))
+        ax = fig.add_subplot(111, projection='3d')
+    else:
+        fig, ax = plt.subplots(figsize=(8, 7))
+
     for l in sorted(set(labels)):
         pts = emb2d[labels == l]
-        ax.scatter(pts[:, 0], pts[:, 1], s=12, color=color(l), alpha=0.7,
-                   edgecolors='none',
-                   label=('noise' if l == -1 else f'C{l} (n={int(np.sum(labels == l))})'))
+        if emb2d.shape[1] == 3:
+            ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], s=12,
+                       color=color(l), alpha=0.7, edgecolors='none',
+                       label=('noise' if l == -1 else f'C{l} (n={int(np.sum(labels == l))})'))
+            ax.set_zlabel(f'{proj_name}-3')
+        else:
+            ax.scatter(pts[:, 0], pts[:, 1], s=12, color=color(l), alpha=0.7,
+                       edgecolors='none',
+                       label=('noise' if l == -1 else f'C{l} (n={int(np.sum(labels == l))})'))
+
     ax.set_xlabel(f'{proj_name}-1'); ax.set_ylabel(f'{proj_name}-2')
     title = f'{proj_name} embedding — {args.algorithm} on {args.feature}'
     if 'silhouette' in m:
@@ -580,6 +814,11 @@ def save_outputs(args, X_wave, meta, length, C, latent, loss_curve, space, label
         "AE Deep Latent-Space Clustering — summary",
         "=" * 44,
         f"input            : {args.input}",
+        f"denoise          : {args.denoise}"
+        + (f" (wavelet={args.denoise_wavelet}/{args.denoise_mode})"
+           if 'wavelet' in args.denoise else "")
+        + (f" (band={args.denoise_band[0]:g}-{args.denoise_band[1]:g} kHz)"
+           if 'bandpass' in args.denoise else ""),
         f"feature          : {args.feature} ({C} ch)",
         f"model            : {args.model}   latent_dim={latent.shape[1]}   "
         f"epochs={len(loss_curve)}/{args.epochs}",
@@ -622,6 +861,23 @@ def main():
     ap.add_argument('input', help='path to a .DTA file')
     ap.add_argument('--out', default='ae_cluster_out', help='output directory')
 
+    g = ap.add_argument_group('preprocessing / denoising')
+    g.add_argument('--denoise', choices=['none', 'wavelet', 'bandpass', 'wavelet+bandpass'],
+                   default='none',
+                   help='clean each waveform before training; wavelet is the AE standard, '
+                        'wavelet+bandpass also removes out-of-band noise')
+    g.add_argument('--denoise-wavelet', default='db4', dest='denoise_wavelet',
+                   help='mother wavelet (e.g. db4, db8, sym8, coif3)')
+    g.add_argument('--denoise-level', type=int, default=0, dest='denoise_level',
+                   help='wavelet decomposition level; 0=auto (max for signal length)')
+    g.add_argument('--denoise-mode', choices=['soft', 'hard'], default='soft',
+                   dest='denoise_mode', help='coefficient thresholding mode')
+    g.add_argument('--denoise-band', type=float, nargs=2, default=[20.0, 400.0],
+                   metavar=('LOW_kHz', 'HIGH_kHz'), dest='denoise_band',
+                   help='bandpass passband in kHz (set to your AE sensor band)')
+    g.add_argument('--denoise-order', type=int, default=4, dest='denoise_order',
+                   help='Butterworth filter order for bandpass')
+
     g = ap.add_argument_group('representation learning')
     g.add_argument('--feature', choices=['waveform', 'fft', 'both'], default='both',
                    help='input representation; fft/both separate AE damage modes better')
@@ -642,7 +898,9 @@ def main():
 
     g = ap.add_argument_group('embedding + clustering')
     g.add_argument('--projection', choices=['umap', 'tsne', 'pca'], default='pca',
-                   help='2D embedding; umap recommended for density clustering')
+                   help='projection method for embedding; umap recommended for density clustering')
+    g.add_argument('--projection-dim', choices=[2, 3], type=int, default=3,
+                   dest='projection_dim', help='embedding dimension for projection/visualization')
     g.add_argument('--umap-neighbors', type=int, default=15, dest='umap_neighbors')
     g.add_argument('--umap-mindist', type=float, default=0.1, dest='umap_mindist')
     g.add_argument('--algorithm', choices=['kmeans', 'gmm', 'hdbscan', 'dbscan'],
@@ -651,6 +909,8 @@ def main():
     g.add_argument('--density-space', choices=['embed', 'latent'], default='embed',
                    dest='density_space',
                    help='space hdbscan/dbscan run on (embed=2D, robust)')
+    g.add_argument('--include-hit-features', action='store_true', dest='include_hit_features',
+                   help='augments clustering features with AE amplitude and peak frequency')
     g.add_argument('--eps', type=float, default=0.3, help='for dbscan')
     g.add_argument('--min-samples', type=int, default=5, dest='min_samples',
                    help='hdbscan/dbscan: lower = less conservative')
@@ -667,15 +927,23 @@ def main():
 
     from sklearn.preprocessing import StandardScaler
 
+    denoiser = make_denoiser(args)
+    if denoiser is not None:
+        band = (f", band={args.denoise_band[0]:g}-{args.denoise_band[1]:g} kHz"
+                if 'bandpass' in args.denoise else "")
+        wave = (f", wavelet={args.denoise_wavelet}/{args.denoise_mode}"
+                if 'wavelet' in args.denoise else "")
+        print(f"[0/5] Denoising: {args.denoise}{wave}{band}")
+
     X, X_wave, meta, length, C = load_waveforms(
         args.input, args.channel, args.max_waveforms,
-        args.fixed_length, args.keep_pretrigger, args.feature)
+        args.fixed_length, args.keep_pretrigger, args.feature, denoiser)
     latent, loss_curve = train(args, X, length, C)
     latent_diagnostic(latent)
     if args.scan_k >= 2:
         scan_k(latent, args.scan_k)
-    emb2d, proj_name = embed_2d(args, latent)
-    space, labels = cluster(args, latent, emb2d)
+    emb2d, proj_name = embed_projection(args, latent)
+    space, labels = cluster(args, latent, emb2d, meta)
 
     # Honest metrics on the latent space (comparable across runs); the
     # embedding-space silhouette is reported separately and flagged optimistic.

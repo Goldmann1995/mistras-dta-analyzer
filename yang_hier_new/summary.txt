@@ -1,0 +1,33 @@
+AE Deep Latent-Space Clustering ¡ª summary
+============================================
+input            : yang.DTA
+denoise          : wavelet (wavelet=db4/soft)
+feature          : fft (1 ch)
+model            : cae   latent_dim=16   epochs=100/100
+waveforms        : 5000   length=320
+clustering       : two-stage   embedding=PCA
+final loss       : 0.008314
+n_clusters       : 5
+noise points     : 0
+
+cluster sizes:
+  C0: 389  (7.8%)
+  C1: 1174  (23.5%)
+  C2: 303  (6.1%)
+  C3: 2847  (56.9%)
+  C4: 287  (5.7%)
+
+quality metrics (report the LATENT one in papers):
+  silhouette (latent)     : 0.0640  (higher=better, max 1)
+  calinski_harabasz       : 452.8  (higher=better)
+  davies_bouldin          : 4.4989  (lower=better)
+
+physical interpretation (mean per cluster):
+  cluster     peak_freq_kHz  centroid_freq_kHz      avg_freq_kHz      amplitude_dB            energy       duration_us           rise_us
+  C0                274.66            252.89            144.22             58.43             15.70            425.78             71.06
+  C1                283.66            253.24            397.78             39.21              0.19             51.10             14.25
+  C2                108.10            234.51            251.22             44.65              1.23            161.08             26.26
+  C3                 88.86            187.58            176.94             45.29              4.66            243.20             44.65
+  C4                228.09            214.74            265.87             45.38              3.01            206.68             47.64
+  -> low centroid/peak freq usually = delamination/debonding;
+     high freq = matrix cracking / fiber breakage (verify with your material).
