@@ -89,6 +89,10 @@ def build_parser():
     g.add_argument("--min-cluster-size", type=int, default=30, dest="min_cluster_size")
     g.add_argument("--min-samples", type=int, default=5, dest="min_samples")
     g.add_argument("--projection", choices=["umap", "tsne", "pca"], default="umap")
+    g.add_argument("--phys-scaling", dest="phys_scaling", default="log-standard",
+                   choices=["log-standard", "standard"],
+                   help="M1 feature scaling: log-standard log1p's skewed "
+                        "magnitude features before z-scoring (recommended)")
     return ap
 
 
@@ -125,6 +129,7 @@ def main():
         common_dim=args.common_dim, k_min=args.k_min, k_max=args.k_max,
         n_runs=args.n_runs, min_cluster_size=args.min_cluster_size,
         min_samples=args.min_samples, projection=args.projection,
+        phys_scaling=args.phys_scaling,
     )
     run_comparison(ds, cfg)
 

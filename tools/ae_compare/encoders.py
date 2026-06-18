@@ -47,14 +47,41 @@ class PhysicalFeatures(FeatureExtractor):
     name = "M1_physical"
     requires_torch = False
 
+    # Positively-skewed (log-normal-ish) AE magnitude features: log1p before
+    # standardizing so a few huge-energy hits don't dominate the distance.
+    # amplitude_dB is already logarithmic, and frequency features are ~normal,
+    # so those are only standardized.
+    SKEW_LOG = {"energy", "abs_energy", "rise_us", "duration_us", "counts"}
+
     def available(self):
         return True, ""
 
     def fit_transform(self, ds, cfg):
         if ds.phys is None:
             return None
-        from sklearn.preprocessing import StandardScaler
-        return StandardScaler().fit_transform(ds.phys).astype(np.float32)
+        return scale_physical(ds.phys, ds.phys_names,
+                              getattr(cfg, "phys_scaling", "log-standard"),
+                              self.SKEW_LOG).astype(np.float32)
+
+
+def scale_physical(phys, names, mode, skew_log):
+    """Scale the parametric feature matrix per column.
+
+    mode='log-standard' : log1p the skewed magnitude columns, then z-score all
+    mode='standard'     : z-score every column (legacy behaviour)
+
+    NOTE: a purely linear scaler (e.g. RobustScaler) would be neutralized by the
+    StandardScaler that clustering._common_dim applies downstream — only the
+    nonlinear log1p step has a lasting effect, which is why it is the default.
+    """
+    from sklearn.preprocessing import StandardScaler
+    X = np.asarray(phys, dtype=np.float64).copy()
+    if mode == "log-standard":
+        for j, nm in enumerate(names):
+            # log1p needs non-negative input; AE magnitudes are >=0 but guard anyway
+            if nm in skew_log and np.nanmin(X[:, j]) >= 0:
+                X[:, j] = np.log1p(X[:, j])
+    return StandardScaler().fit_transform(X)
 
 
 # --------------------------------------------------------------------------- #

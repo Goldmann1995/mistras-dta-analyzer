@@ -50,7 +50,15 @@ python tools/run_compare.py data.DTA --methods M1 M2 M3 M4 --epochs 80
 
 Key flags: `--channel`, `--max-hits`, `--length`, `--denoise {none,wavelet,bandpass,wavelet+bandpass}`,
 `--latent-dim`, `--epochs`, `--common-dim`, `--k-min/--k-max`, `--n-runs`,
-`--projection {umap,tsne,pca}`, `--device {auto,cpu,cuda}`.
+`--projection {umap,tsne,pca}`, `--device {auto,cpu,cuda}`,
+`--phys-scaling {log-standard,standard}`.
+
+**M1 feature scaling** (`--phys-scaling`, default `log-standard`): AE magnitude
+features (energy, abs_energy, rise, duration, counts) are log-normal-ish, so
+plain z-scoring lets a few huge-energy hits dominate and KMeans tends to find a
+trivial big-vs-small split. `log-standard` applies `log1p` to those skewed
+columns before z-scoring; `amplitude_dB` (already logarithmic) and the
+frequency features are only z-scored. Use `standard` for the legacy behaviour.
 
 ## Outputs (`--out`, default `ae_compare_out/`)
 
