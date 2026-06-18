@@ -266,3 +266,7 @@ __marimo__/
 # Frontend
 frontend/node_modules/
 frontend/dist/
+
+# AE comparison framework outputs
+ae_compare_out/
+ae_compare_selftest/
