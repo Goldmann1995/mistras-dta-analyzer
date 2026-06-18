@@ -93,3 +93,95 @@ The latent clusters are a "black box". To get **explainable rules** like
 `cluster_labels.csv`, attach the parametric hit features, and fit a shallow
 decision tree on `cluster` (e.g. `sklearn.tree.DecisionTreeClassifier`).
 The in-app "Clustering" tab already does this for parametric features.
+
+---
+
+# STCD-AE — multi-view contrastive alignment clustering (`stcd_ae.py`)
+
+A second, **research-grade** standalone script. Where `ae_deep_cluster.py`
+trains one autoencoder on one representation, **STCD-AE learns ONE shared
+latent space in which several physical "views" of the same AE event are
+aligned**, then clusters on the aligned consensus. This is the part you asked
+for: *几个表示在潜空间内对齐 + 可视化*.
+
+```
+each hit ─► time  (waveform)   ─► encoder_T ┐
+         ─► freq  (FFT)         ─► encoder_F ├─► aligned latent ─► cluster
+         ─► tf    (spectrogram) ─► encoder_S ┘        │
+   cross-view alignment pulls the 3 views of ONE event together,
+   reconstruction keeps the codes physical, no view is allowed to dominate.
+```
+
+### Why it is genuinely new (not just SimCLR re-skinned)
+* **Positive pairs are deterministic, information-complementary physical
+  transforms** (time / spectrum / spectrogram) of the *same* signal — not two
+  random augmentations of one image. Alignment therefore forces the latent to
+  keep only the cross-domain-invariant *damage-source* signature and drop
+  view-specific nuisances (windowing, propagation amplitude/decay).
+* **Default alignment loss is non-contrastive (VICReg).** Plain InfoNCE is
+  instance discrimination — it aligns views but *repels events of the same
+  damage mode*, so it aligns yet **anti-clusters**. VICReg aligns (invariance)
+  + prevents collapse (variance) + decorrelates (covariance) with **no
+  same-mode repulsion**, so the latent clusters *and* aligns. (`--align-loss
+  infonce` is kept as the ablation that demonstrates this.)
+* **Fusion beats every single view.** On the synthetic check, time alone /
+  freq alone reach ARI ≈ 0.5–0.75; the aligned fusion reaches **ARI ≈ 1.0**.
+* **Unsupervised model selection.** It snapshots every few epochs and keeps the
+  one with the best *combined* (cluster silhouette + cross-view alignment)
+  score — no labels, immune to over/under-training.
+* **Optional physics-disentanglement** (`--disentangle`): splits the latent
+  into `z_source` / `z_propagation`, uses the parametric AE features
+  (peak/centroid freq vs amplitude/energy/duration) as weak supervision plus a
+  gradient-reversal adversary, and clusters on the distance-invariant
+  `z_source`.
+
+### Validate the install (no data needed)
+```bash
+python tools/stcd_ae.py --self-test
+```
+Builds a synthetic 4-mode dataset where **frequency is the true signal** and
+amplitude/decay are nuisances (your exact situation), trains, and prints ARI/NMI
+against the known modes (expect ≈ 1.0).
+
+### Run on your data
+```bash
+# recommended starting point (UMAP needs: pip install umap-learn)
+python tools/stcd_ae.py data.DTA --views time,freq,tf --clusters 4 --projection umap
+
+# lighter / faster: two 1-D views only (no spectrogram)
+python tools/stcd_ae.py data.DTA --views time,freq --clusters 4
+
+# let the data choose k
+python tools/stcd_ae.py data.DTA --scan-k 8 --algorithm hdbscan --projection umap
+
+# physics-disentangled: cluster on the propagation-invariant source subspace
+python tools/stcd_ae.py data.DTA --disentangle --source-dim 8 --clusters 4
+
+# ablation for your paper: alignment that anti-clusters
+python tools/stcd_ae.py data.DTA --align-loss infonce
+```
+
+### Outputs (into `--out`, default `stcd_out/`)
+| file | meaning |
+|------|---------|
+| `alignment_2d.png`     | **headline figure** — each view in its own color, the 3 views of one event joined by a gray link; short links + overlapping colors = aligned |
+| `alignment_curve.png`  | same-event vs different-event cosine over epochs (the gap = alignment quality); selected epoch marked |
+| `per_view_scatter.png` | each view embedded separately, colored by the shared clusters — shows which view separates which modes |
+| `latent_scatter.png`   | 2D embedding of the aligned consensus, colored by cluster |
+| `loss_curves.png`      | reconstruction / alignment / total loss |
+| `cluster_spectra.png`  | mean FFT per cluster (physical signature) |
+| `prototypes.png`       | medoid waveform per cluster |
+| `cluster_labels.csv` / `cluster_features.csv` / `latent_codes.npy` / `summary.txt` | as in `ae_deep_cluster.py` |
+
+### Key knobs
+| Goal | Knob |
+|------|------|
+| Which views to align | `--views time,freq,tf` (≥2 required) |
+| Clusters too diffuse | lower `--latent-dim` (VICReg spreads every dim; 8–16 is good) |
+| Don't know k | `--algorithm hdbscan --projection umap` or `--scan-k 8` |
+| Stronger/weaker alignment | `--contrast-weight` ↑/↓ |
+| Remove propagation effect | `--disentangle --source-dim 8` |
+| GPU | `--device cuda` (auto-detected) |
+
+`silhouette` in `summary.txt` is computed on the aligned latent — report that
+one in papers; the alignment gap quantifies how well the views agree.
