@@ -148,6 +148,26 @@ class AEDataset:
     def __len__(self):
         return len(self.waves)
 
+    def _phys_col(self, name):
+        if self.phys is None or name not in self.phys_names:
+            return None
+        return self.phys[:, self.phys_names.index(name)].astype(float)
+
+    def amp_freq_time(self):
+        """Per-hit (amplitude_dB, frequency_kHz, time) for the AE scatter plots.
+
+        Frequency prefers peak -> centroid -> average. Any quantity that the
+        file did not record comes back as None.
+        """
+        amps = self._phys_col("amplitude_dB")
+        freqs = None
+        for k in ("peak_freq_kHz", "centroid_freq_kHz", "avg_freq_kHz"):
+            freqs = self._phys_col(k)
+            if freqs is not None:
+                break
+        times = np.array([m["time"] for m in self.meta], dtype=float)
+        return amps, freqs, times
+
     # -- representations ---------------------------------------------------- #
     @property
     def fft(self):

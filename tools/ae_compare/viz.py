@@ -84,6 +84,57 @@ def ra_af_plot(out_dir, method_name, ra, af, labels):
     return p
 
 
+def amplitude_vs_freq_plot(out_dir, method_name, freqs, amps, labels):
+    """AE hit amplitude (dB) vs frequency (kHz), coloured by cluster."""
+    if freqs is None or amps is None:
+        return None
+    mask = np.isfinite(freqs) & np.isfinite(amps)
+    if np.sum(mask) < 3:
+        return None
+    plt = _mpl()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for l in sorted(set(labels)):
+        m = mask & (labels == l)
+        if np.sum(m) == 0:
+            continue
+        ax.scatter(freqs[m], amps[m], s=16, alpha=0.7, color=_color(plt, l),
+                   edgecolors="none",
+                   label=("noise" if l == -1 else f"C{l} (n={int(np.sum(m))})"))
+    ax.set_xlabel("Frequency (kHz)"); ax.set_ylabel("Amplitude (dB)")
+    ax.set_title(f"{method_name} — AE amplitude vs frequency by cluster")
+    ax.legend(markerscale=1.5, fontsize=8, loc="best"); ax.grid(alpha=0.25)
+    plt.tight_layout()
+    p = os.path.join(out_dir, f"amp_freq_{method_name}.png")
+    plt.savefig(p, dpi=150); plt.close()
+    return p
+
+
+def time_vs_freq_plot(out_dir, method_name, times, freqs, labels):
+    """AE hit time (s) vs frequency (kHz), coloured by cluster — shows how the
+    clusters evolve over the loading history."""
+    if times is None or freqs is None:
+        return None
+    mask = np.isfinite(times) & np.isfinite(freqs)
+    if np.sum(mask) < 3:
+        return None
+    plt = _mpl()
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for l in sorted(set(labels)):
+        m = mask & (labels == l)
+        if np.sum(m) == 0:
+            continue
+        ax.scatter(times[m], freqs[m], s=16, alpha=0.7, color=_color(plt, l),
+                   edgecolors="none",
+                   label=("noise" if l == -1 else f"C{l} (n={int(np.sum(m))})"))
+    ax.set_xlabel("Time (s)"); ax.set_ylabel("Frequency (kHz)")
+    ax.set_title(f"{method_name} — AE time vs frequency by cluster")
+    ax.legend(markerscale=1.5, fontsize=8, loc="best"); ax.grid(alpha=0.25)
+    plt.tight_layout()
+    p = os.path.join(out_dir, f"time_freq_{method_name}.png")
+    plt.savefig(p, dpi=150); plt.close()
+    return p
+
+
 def summary_bar(out_dir, results, clusterer="kmeans"):
     """Grouped bar of silhouette per method (mean +/- std) for quick comparison."""
     plt = _mpl()

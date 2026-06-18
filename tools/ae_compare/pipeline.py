@@ -66,6 +66,9 @@ def run_comparison(ds, cfg):
             viz.embedding_plot(cfg.out, ext.name, Z, labels, proj=cfg.projection,
                                title_extra=f"({mid})")
             viz.ra_af_plot(cfg.out, ext.name, ds.ra, ds.af, labels)
+            amps, freqs, times = ds.amp_freq_time()
+            viz.amplitude_vs_freq_plot(cfg.out, ext.name, freqs, amps, labels)
+            viz.time_vs_freq_plot(cfg.out, ext.name, times, freqs, labels)
         np.save(os.path.join(cfg.out, f"latent_{ext.name}.npy"), latent)
 
     # comparison figures + tables
