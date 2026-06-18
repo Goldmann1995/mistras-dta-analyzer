@@ -57,10 +57,14 @@ Key flags: `--channel`, `--max-hits`, `--length`, `--denoise {none,wavelet,bandp
 - `comparison.csv` — every (method × clusterer) row with all metrics
 - `results.json` — full machine-readable results
 - `comparison_kmeans.png`, `comparison_hdbscan.png` — silhouette bar charts
-- `embed_<method>.png` — 2D embedding per method, colored by cluster
-- `ra_af_<method>.png` — RA–AF damage-mode map (physical validation)
-- `amp_freq_<method>.png` — AE amplitude (dB) vs frequency, colored by cluster
-- `time_freq_<method>.png` — AE time vs frequency, colored by cluster (loading history)
+
+Per-method scatter plots are written for **both clusterers**, suffixed
+`_kmeans` / `_hdbscan` (a clusterer that collapses to all-noise is skipped):
+
+- `embed_<method>_<clusterer>.png` — 2D embedding, colored by cluster
+- `ra_af_<method>_<clusterer>.png` — RA–AF damage-mode map (physical validation)
+- `amp_freq_<method>_<clusterer>.png` — AE amplitude (dB) vs frequency
+- `time_freq_<method>_<clusterer>.png` — AE time vs frequency (loading history)
 - `latent_<method>.npy` — raw latent matrix per method
 
 ## Standard test

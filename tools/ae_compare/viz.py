@@ -38,7 +38,7 @@ def _color(plt, l):
     return (0.3, 0.3, 0.3, 0.4) if l == -1 else cmap(int(l) % 10)
 
 
-def embedding_plot(out_dir, method_name, Z, labels, proj="umap", title_extra=""):
+def embedding_plot(out_dir, method_name, Z, labels, proj="umap", title_extra="", suffix=""):
     plt = _mpl()
     emb, pname = _project_2d(Z, proj)
     fig, ax = plt.subplots(figsize=(7, 6))
@@ -51,12 +51,12 @@ def embedding_plot(out_dir, method_name, Z, labels, proj="umap", title_extra="")
     ax.set_title(f"{method_name} — {pname} embedding {title_extra}")
     ax.legend(markerscale=1.6, fontsize=8, loc="best"); ax.grid(alpha=0.2)
     plt.tight_layout()
-    p = os.path.join(out_dir, f"embed_{method_name}.png")
+    p = os.path.join(out_dir, f"embed_{method_name}{suffix}.png")
     plt.savefig(p, dpi=150); plt.close()
     return p
 
 
-def ra_af_plot(out_dir, method_name, ra, af, labels):
+def ra_af_plot(out_dir, method_name, ra, af, labels, suffix=""):
     """RA (rise/amp) vs AF (avg freq) coloured by cluster — Aggelis-style
     damage-mode validation. Tensile/matrix cracking sits high-AF/low-RA;
     shear/delamination sits low-AF/high-RA."""
@@ -79,12 +79,12 @@ def ra_af_plot(out_dir, method_name, ra, af, labels):
     ax.set_title(f"{method_name} — RA-AF damage-mode map")
     ax.legend(fontsize=8, loc="best"); ax.grid(alpha=0.25)
     plt.tight_layout()
-    p = os.path.join(out_dir, f"ra_af_{method_name}.png")
+    p = os.path.join(out_dir, f"ra_af_{method_name}{suffix}.png")
     plt.savefig(p, dpi=150); plt.close()
     return p
 
 
-def amplitude_vs_freq_plot(out_dir, method_name, freqs, amps, labels):
+def amplitude_vs_freq_plot(out_dir, method_name, freqs, amps, labels, suffix=""):
     """AE hit amplitude (dB) vs frequency (kHz), coloured by cluster."""
     if freqs is None or amps is None:
         return None
@@ -104,12 +104,12 @@ def amplitude_vs_freq_plot(out_dir, method_name, freqs, amps, labels):
     ax.set_title(f"{method_name} — AE amplitude vs frequency by cluster")
     ax.legend(markerscale=1.5, fontsize=8, loc="best"); ax.grid(alpha=0.25)
     plt.tight_layout()
-    p = os.path.join(out_dir, f"amp_freq_{method_name}.png")
+    p = os.path.join(out_dir, f"amp_freq_{method_name}{suffix}.png")
     plt.savefig(p, dpi=150); plt.close()
     return p
 
 
-def time_vs_freq_plot(out_dir, method_name, times, freqs, labels):
+def time_vs_freq_plot(out_dir, method_name, times, freqs, labels, suffix=""):
     """AE hit time (s) vs frequency (kHz), coloured by cluster — shows how the
     clusters evolve over the loading history."""
     if times is None or freqs is None:
@@ -130,7 +130,7 @@ def time_vs_freq_plot(out_dir, method_name, times, freqs, labels):
     ax.set_title(f"{method_name} — AE time vs frequency by cluster")
     ax.legend(markerscale=1.5, fontsize=8, loc="best"); ax.grid(alpha=0.25)
     plt.tight_layout()
-    p = os.path.join(out_dir, f"time_freq_{method_name}.png")
+    p = os.path.join(out_dir, f"time_freq_{method_name}{suffix}.png")
     plt.savefig(p, dpi=150); plt.close()
     return p
 

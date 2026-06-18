@@ -60,15 +60,20 @@ def run_comparison(ds, cfg):
                 line += f"  ARI={_fmt(agg.get('ari_mean'))} NMI={_fmt(agg.get('nmi_mean'))}"
             print(line)
 
-        # visualizations use the kmeans labels (always present if >=2 clusters)
-        labels = clusters["kmeans"]["labels"]
-        if labels is not None:
+        # per-method scatter plots for BOTH clusterers (kmeans + hdbscan).
+        # Filenames are suffixed with the clusterer; a clusterer that produced
+        # no usable clustering (e.g. hdbscan -> all noise) is skipped.
+        amps, freqs, times = ds.amp_freq_time()
+        for cname, agg in clusters.items():
+            labels = agg["labels"]
+            if labels is None or len(set(labels)) < 2:
+                continue
+            sfx = f"_{cname}"
             viz.embedding_plot(cfg.out, ext.name, Z, labels, proj=cfg.projection,
-                               title_extra=f"({mid})")
-            viz.ra_af_plot(cfg.out, ext.name, ds.ra, ds.af, labels)
-            amps, freqs, times = ds.amp_freq_time()
-            viz.amplitude_vs_freq_plot(cfg.out, ext.name, freqs, amps, labels)
-            viz.time_vs_freq_plot(cfg.out, ext.name, times, freqs, labels)
+                               title_extra=f"({mid}, {cname})", suffix=sfx)
+            viz.ra_af_plot(cfg.out, ext.name, ds.ra, ds.af, labels, suffix=sfx)
+            viz.amplitude_vs_freq_plot(cfg.out, ext.name, freqs, amps, labels, suffix=sfx)
+            viz.time_vs_freq_plot(cfg.out, ext.name, times, freqs, labels, suffix=sfx)
         np.save(os.path.join(cfg.out, f"latent_{ext.name}.npy"), latent)
 
     # comparison figures + tables
