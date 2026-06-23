@@ -194,6 +194,10 @@ async def get_source_location(file_id: str, config: SensorConfig):
 async def cluster_analysis(file_id: str, config: ClusterConfig):
     try:
         cache = dta_service._file_cache[file_id]
+        extra_features = {}
+        rec_entropy = cache.get('rec_entropy')
+        if rec_entropy is not None and len(rec_entropy) > 0:
+            extra_features['entropy'] = rec_entropy
         return compute_clustering(
             cache['rec'],
             features=config.features,
@@ -203,6 +207,7 @@ async def cluster_analysis(file_id: str, config: ClusterConfig):
             min_samples=config.min_samples,
             max_tree_depth=config.max_tree_depth,
             channel=config.channel,
+            extra_features=extra_features if extra_features else None,
         )
     except KeyError:
         raise HTTPException(404, "File not found")

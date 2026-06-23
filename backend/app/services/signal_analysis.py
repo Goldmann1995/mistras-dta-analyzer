@@ -4,6 +4,7 @@ from PyEMD import EMD, EEMD
 from scipy.signal import hilbert, butter, sosfilt, sosfiltfilt
 from scipy.fft import fft, fftfreq
 from scipy.optimize import brentq, minimize
+from scipy.stats import skew, kurtosis
 from typing import Optional
 
 from MistrasDTA import get_waveform_data
@@ -577,6 +578,61 @@ def compute_source_locations(
     }
 
 
+def compute_waveform_entropy(V: np.ndarray) -> float:
+    """Compute Shannon information entropy of a waveform's voltage distribution.
+
+    Uses Scott's rule with skewness/kurtosis correction for optimal bin width.
+    """
+    n = len(V)
+    if n < 2:
+        return 0.0
+
+    sigma = np.std(V)
+    if sigma == 0:
+        return 0.0
+
+    b_n = 3.49 * sigma * n ** (-1.0 / 3.0)
+
+    sk = skew(V)
+    kurt_val = kurtosis(V, fisher=True)
+
+    sk2 = sk ** 2
+    c_sk = np.sqrt(1.0 + 2.0 * sk2) if sk2 > 0 else 1.0
+
+    c_kur = (1.0 + (kurt_val / 4.0)) ** (-0.2) if kurt_val > -4.0 else 1.0
+
+    b_opt = b_n * c_sk * c_kur
+    if b_opt <= 0:
+        b_opt = b_n if b_n > 0 else 1.0
+
+    v_min, v_max = np.min(V), np.max(V)
+    v_range = v_max - v_min
+    if v_range == 0:
+        return 0.0
+
+    num_bins = max(1, int(np.ceil(v_range / b_opt)))
+
+    hist, _ = np.histogram(V, bins=num_bins)
+    hist = hist[hist > 0]
+    P = hist / n
+
+    entropy = -np.sum(P * np.log(P))
+    return float(entropy)
+
+
+def compute_all_entropies(wfm_data, keep_pretrigger: bool = False) -> np.ndarray:
+    """Compute waveform entropy for every waveform row."""
+    entropies = np.empty(len(wfm_data), dtype=np.float64)
+    for i in range(len(wfm_data)):
+        row = wfm_data[i]
+        t, V = get_waveform_data(row)
+        if not keep_pretrigger and row['TDLY'] < 0:
+            trim = abs(int(row['TDLY']))
+            V = V[trim:]
+        entropies[i] = compute_waveform_entropy(V)
+    return entropies
+
+
 def compute_clustering(
     rec_data,
     features: list[str],
@@ -586,6 +642,7 @@ def compute_clustering(
     min_samples: int = 5,
     max_tree_depth: int = 5,
     channel: Optional[int] = None,
+    extra_features: Optional[dict[str, np.ndarray]] = None,
 ) -> dict:
     from sklearn.cluster import KMeans, DBSCAN
     from sklearn.mixture import GaussianMixture
@@ -614,18 +671,34 @@ def compute_clustering(
     if len(filtered) < n_clusters:
         raise ValueError(f"Not enough data points ({len(filtered)}) for {n_clusters} clusters")
 
+    if extra_features is None:
+        extra_features = {}
+
     resolved_features = []
     feature_labels = []
+    extra_columns = []
     for f in features:
-        rf = field_resolve.get(f, f)
-        if rf in filtered.dtype.names:
-            resolved_features.append(rf)
+        if f in extra_features:
             feature_labels.append(f)
+            resolved_features.append(None)
+            extra_columns.append(extra_features[f][mask].astype(float))
+        else:
+            rf = field_resolve.get(f, f)
+            if rf in filtered.dtype.names:
+                resolved_features.append(rf)
+                feature_labels.append(f)
+                extra_columns.append(None)
 
-    if len(resolved_features) < 2:
+    if len(feature_labels) < 2:
         raise ValueError("Need at least 2 valid features for clustering")
 
-    X_raw = np.column_stack([filtered[f].astype(float) for f in resolved_features])
+    columns = []
+    for i, rf in enumerate(resolved_features):
+        if rf is not None:
+            columns.append(filtered[rf].astype(float))
+        else:
+            columns.append(extra_columns[i])
+    X_raw = np.column_stack(columns)
 
     valid_mask = np.all(np.isfinite(X_raw), axis=1)
     X_raw = X_raw[valid_mask]

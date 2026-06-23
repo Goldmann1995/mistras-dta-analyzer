@@ -29,6 +29,7 @@ const AVAILABLE_FEATURES = [
   { key: 'signal_strength', label: 'Signal Strength' },
   { key: 'init_frequency', label: 'Init Frequency (kHz)' },
   { key: 'rev_frequency', label: 'Rev Frequency (kHz)' },
+  { key: 'entropy', label: 'Waveform Entropy (nats)' },
 ];
 
 export default function ClusterView({ file }: Props) {

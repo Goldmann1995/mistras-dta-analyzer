@@ -19,6 +19,7 @@ const COLS: { key: keyof HitRecord; label: string; sortKey: string; fmt?: (v: nu
   { key: 'rms', label: 'RMS', sortKey: 'RMS', fmt: (v) => v.toFixed(4) },
   { key: 'peak_frequency', label: 'P-FRQ', sortKey: 'P-FRQ' },
   { key: 'abs_energy', label: 'Abs Energy', sortKey: 'ABS-ENERGY', fmt: (v) => v.toFixed(4) },
+  { key: 'entropy', label: 'Entropy', sortKey: '', fmt: (v) => v != null ? v.toFixed(4) : '' },
 ];
 
 const PAGE = 50;

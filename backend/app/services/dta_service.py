@@ -10,6 +10,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 from MistrasDTA import read_bin, get_waveform_data
+from .signal_analysis import compute_all_entropies
 
 
 def _trim_pretrigger(t, V, tdly):
@@ -22,6 +23,33 @@ def _trim_pretrigger(t, V, tdly):
 _file_cache: dict[str, dict] = {}
 
 
+def _match_entropy_to_rec(rec, wfm, wfm_entropies: np.ndarray) -> np.ndarray:
+    """Map per-waveform entropy values to per-hit (rec) array by time+channel matching."""
+    n_rec = len(rec)
+    rec_entropy = np.full(n_rec, np.nan, dtype=np.float64)
+
+    if len(wfm) == 0 or n_rec == 0:
+        return rec_entropy
+
+    if len(rec) == len(wfm):
+        return wfm_entropies.copy()
+
+    wfm_times = wfm['SSSSSSSS.mmmuuun']
+    wfm_chs = wfm['CH']
+    rec_times = rec['SSSSSSSS.mmmuuun']
+    rec_chs = rec['CH']
+
+    wfm_idx = 0
+    for i in range(n_rec):
+        if wfm_idx >= len(wfm):
+            break
+        if rec_chs[i] == wfm_chs[wfm_idx] and abs(rec_times[i] - wfm_times[wfm_idx]) < 1e-9:
+            rec_entropy[i] = wfm_entropies[wfm_idx]
+            wfm_idx += 1
+
+    return rec_entropy
+
+
 def load_dta_file(filepath: str, filename: str) -> str:
     file_id = str(uuid.uuid4())[:8]
     rec, wfm = read_bin(filepath)
@@ -29,11 +57,17 @@ def load_dta_file(filepath: str, filename: str) -> str:
     rec_list = rec if isinstance(rec, np.recarray) else []
     wfm_list = wfm if isinstance(wfm, np.recarray) else []
 
+    rec_entropy = np.array([], dtype=np.float64)
+    if isinstance(wfm, np.recarray) and len(wfm) > 0 and isinstance(rec, np.recarray) and len(rec) > 0:
+        wfm_entropies = compute_all_entropies(wfm)
+        rec_entropy = _match_entropy_to_rec(rec, wfm, wfm_entropies)
+
     _file_cache[file_id] = {
         'filepath': filepath,
         'filename': filename,
         'rec': rec_list,
         'wfm': wfm_list,
+        'rec_entropy': rec_entropy,
     }
     return file_id
 
@@ -46,6 +80,9 @@ def get_file_info(file_id: str) -> dict:
     channels = sorted(set(int(c) for c in rec['CH'])) if len(rec) > 0 else []
     duration = float(rec['SSSSSSSS.mmmuuun'][-1] - rec['SSSSSSSS.mmmuuun'][0]) if len(rec) > 1 else 0.0
     fields = list(rec.dtype.names) if len(rec) > 0 else []
+    has_entropy = len(data.get('rec_entropy', [])) == len(rec) and len(rec) > 0
+    if has_entropy:
+        fields.append('ENTROPY')
 
     return {
         'filename': data['filename'],
@@ -55,6 +92,7 @@ def get_file_info(file_id: str) -> dict:
         'channels': channels,
         'duration': duration,
         'fields': fields,
+        'has_entropy': has_entropy,
     }
 
 
@@ -86,16 +124,17 @@ def get_hits(
     if time_max is not None:
         mask &= rec['SSSSSSSS.mmmuuun'] <= time_max
 
-    filtered = rec[mask]
-    total = len(filtered)
+    original_indices = np.where(mask)[0]
+    total = len(original_indices)
 
-    if sort_by and sort_by in filtered.dtype.names:
-        indices = np.argsort(filtered[sort_by])
+    if sort_by and sort_by in rec.dtype.names:
+        filtered = rec[mask]
+        sort_order_idx = np.argsort(filtered[sort_by])
         if sort_order == 'desc':
-            indices = indices[::-1]
-        filtered = filtered[indices]
+            sort_order_idx = sort_order_idx[::-1]
+        original_indices = original_indices[sort_order_idx]
 
-    page = filtered[offset:offset + limit]
+    page_indices = original_indices[offset:offset + limit]
 
     field_map = {
         'SSSSSSSS.mmmuuun': 'time',
@@ -119,13 +158,19 @@ def get_hits(
         'TIMESTAMP': 'timestamp',
     }
 
+    rec_entropy = _file_cache[file_id].get('rec_entropy', np.array([]))
+    has_entropy = len(rec_entropy) == len(rec)
+
     hits = []
-    for i, row in enumerate(page):
+    for i, orig_idx in enumerate(page_indices):
+        row = rec[orig_idx]
         hit = {'index': offset + i}
         for fname in rec.dtype.names:
             key = field_map.get(fname, fname)
             val = row[fname]
             hit[key] = float(val) if isinstance(val, (np.floating, float)) else int(val)
+        if has_entropy and np.isfinite(rec_entropy[orig_idx]):
+            hit['entropy'] = float(rec_entropy[orig_idx])
         hits.append(hit)
 
     return {'total': total, 'hits': hits}
@@ -218,6 +263,32 @@ def get_channel_stats(file_id: str) -> list[dict]:
     return stats
 
 
+_FIELD_RESOLVE = {
+    'time': 'SSSSSSSS.mmmuuun',
+    'channel': 'CH', 'amplitude': 'AMP', 'energy': 'ENER',
+    'duration': 'DURATION', 'rise': 'RISE', 'counts': 'COUN',
+    'peak_counts': 'PCNTS', 'rms': 'RMS', 'asl': 'ASL',
+    'avg_frequency': 'A-FRQ', 'abs_energy': 'ABS-ENERGY',
+    'signal_strength': 'SIG STRENGTH', 'peak_frequency': 'P-FRQ',
+    'freq_centroid': 'FRQ-C', 'timestamp': 'TIMESTAMP',
+}
+
+
+def _resolve_field_values(file_id: str, field_name: str, indices: np.ndarray) -> Optional[np.ndarray]:
+    """Resolve a field name to values, supporting both rec columns and computed features like entropy."""
+    if field_name == 'entropy':
+        rec_entropy = _file_cache[file_id].get('rec_entropy', np.array([]))
+        if len(rec_entropy) > 0:
+            return rec_entropy[indices]
+        return None
+
+    rec = _file_cache[file_id]['rec']
+    resolved = _FIELD_RESOLVE.get(field_name, field_name)
+    if resolved in rec.dtype.names:
+        return rec[resolved][indices].astype(float)
+    return None
+
+
 def get_scatter_data(
     file_id: str,
     x_field: str,
@@ -234,39 +305,29 @@ def get_scatter_data(
     if channel is not None:
         mask &= rec['CH'] == channel
 
-    filtered = rec[mask]
+    all_indices = np.where(mask)[0]
+    step = max(1, len(all_indices) // max_points)
+    sampled_indices = all_indices[::step]
 
-    field_resolve = {
-        'time': 'SSSSSSSS.mmmuuun',
-        'channel': 'CH', 'amplitude': 'AMP', 'energy': 'ENER',
-        'duration': 'DURATION', 'rise': 'RISE', 'counts': 'COUN',
-        'peak_counts': 'PCNTS', 'rms': 'RMS', 'asl': 'ASL',
-        'avg_frequency': 'A-FRQ', 'abs_energy': 'ABS-ENERGY',
-        'signal_strength': 'SIG STRENGTH', 'peak_frequency': 'P-FRQ',
-        'freq_centroid': 'FRQ-C', 'timestamp': 'TIMESTAMP',
-    }
+    x_vals = _resolve_field_values(file_id, x_field, sampled_indices)
+    y_vals = _resolve_field_values(file_id, y_field, sampled_indices)
 
-    xf = field_resolve.get(x_field, x_field)
-    yf = field_resolve.get(y_field, y_field)
-
-    step = max(1, len(filtered) // max_points)
-    sampled = filtered[::step]
-
-    indices = np.where(mask)[0][::step]
+    if x_vals is None or y_vals is None:
+        return {'x': [], 'y': [], 'color': None, 'x_field': x_field, 'y_field': y_field}
 
     result = {
-        'x': [float(v) for v in sampled[xf]],
-        'y': [float(v) for v in sampled[yf]],
-        'indices': [int(v) for v in indices],
+        'x': [float(v) for v in x_vals],
+        'y': [float(v) for v in y_vals],
+        'indices': [int(v) for v in sampled_indices],
         'color': None,
         'x_field': x_field,
         'y_field': y_field,
     }
 
     if color_field:
-        cf = field_resolve.get(color_field, color_field)
-        if cf in sampled.dtype.names:
-            result['color'] = [float(v) for v in sampled[cf]]
+        c_vals = _resolve_field_values(file_id, color_field, sampled_indices)
+        if c_vals is not None:
+            result['color'] = [float(v) for v in c_vals]
             result['color_field'] = color_field
 
     return result
@@ -282,20 +343,17 @@ def get_histogram_data(
     if len(rec) == 0:
         return {'edges': [], 'counts': [], 'field': field}
 
-    field_resolve = {
-        'amplitude': 'AMP', 'energy': 'ENER', 'duration': 'DURATION',
-        'rise': 'RISE', 'counts': 'COUN', 'rms': 'RMS',
-        'abs_energy': 'ABS-ENERGY', 'signal_strength': 'SIG STRENGTH',
-        'peak_frequency': 'P-FRQ', 'freq_centroid': 'FRQ-C',
-        'avg_frequency': 'A-FRQ',
-    }
-    resolved = field_resolve.get(field, field)
-
     mask = np.ones(len(rec), dtype=bool)
     if channel is not None:
         mask &= rec['CH'] == channel
 
-    values = rec[mask][resolved].astype(float)
+    indices = np.where(mask)[0]
+    values = _resolve_field_values(file_id, field, indices)
+    if values is None:
+        return {'edges': [], 'counts': [], 'field': field}
+
+    finite_mask = np.isfinite(values)
+    values = values[finite_mask]
     hist_counts, edges = np.histogram(values, bins=bins)
 
     return {
@@ -560,13 +618,24 @@ def export_csv(
             headers.append(field_map[fname])
             field_names.append(fname)
 
+    rec_entropy = data.get('rec_entropy', np.array([]))
+    has_entropy = len(rec_entropy) == len(rec)
+    if has_entropy:
+        headers.append('Entropy_nats')
+
+    filtered_indices = np.where(mask)[0]
+
     with open(filepath, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(headers)
-        for row in filtered:
-            writer.writerow([
+        for j, row in enumerate(filtered):
+            row_data = [
                 float(row[fn]) if isinstance(row[fn], (np.floating, float)) else int(row[fn])
                 for fn in field_names
-            ])
+            ]
+            if has_entropy:
+                ent = rec_entropy[filtered_indices[j]]
+                row_data.append(float(ent) if np.isfinite(ent) else '')
+            writer.writerow(row_data)
 
     return filepath

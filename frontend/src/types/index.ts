@@ -29,6 +29,7 @@ export interface HitRecord {
   freq_centroid?: number;
   peak_frequency?: number;
   timestamp?: number;
+  entropy?: number;
 }
 
 export interface HitsResponse {
