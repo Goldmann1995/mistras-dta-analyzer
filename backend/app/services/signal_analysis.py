@@ -643,12 +643,14 @@ def compute_clustering(
     max_tree_depth: int = 5,
     channel: Optional[int] = None,
     extra_features: Optional[dict[str, np.ndarray]] = None,
+    filter_config: Optional[dict] = None,
 ) -> dict:
     from sklearn.cluster import KMeans, DBSCAN
     from sklearn.mixture import GaussianMixture
     from sklearn.tree import DecisionTreeClassifier
     from sklearn.preprocessing import StandardScaler
     from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+    from .signal_filter import build_filter_mask, load_filter_config
 
     field_resolve = {
         'time': 'SSSSSSSS.mmmuuun',
@@ -666,6 +668,12 @@ def compute_clustering(
     mask = np.ones(len(rec_data), dtype=bool)
     if channel is not None:
         mask &= rec_data['CH'] == channel
+
+    if filter_config is None:
+        filter_config = load_filter_config()
+    filter_mask = build_filter_mask(rec_data, config=filter_config)
+    mask &= filter_mask
+
     filtered = rec_data[mask]
 
     if len(filtered) < n_clusters:

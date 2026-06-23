@@ -222,8 +222,72 @@ def _waveform_to_features(v, L, feature):
     return np.stack([time_ch, spec_rs])              # both -> (2, L)
 
 
+def _load_filter_config(path):
+    """Load filter_config.json from the given path or repo root default."""
+    import json
+    if path and os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    default = os.path.join(_REPO_ROOT, 'filter_config.json')
+    if os.path.exists(default):
+        with open(default) as f:
+            return json.load(f)
+    return {'filters': []}
+
+
+def _apply_wfm_filter(rec, wfm, idx_all, filter_config):
+    """Apply filter_config rules to wfm indices using matched rec rows."""
+    if not filter_config.get('filters'):
+        return idx_all
+
+    field_map = filter_config.get('field_name_map', {})
+    same_len = isinstance(rec, np.recarray) and len(rec) == len(wfm)
+    rec_times = None
+    if isinstance(rec, np.recarray) and len(rec) and 'SSSSSSSS.mmmuuun' in rec.dtype.names and not same_len:
+        rec_times = rec['SSSSSSSS.mmmuuun']
+
+    keep = np.ones(len(idx_all), dtype=bool)
+    names = rec.dtype.names if isinstance(rec, np.recarray) and len(rec) else ()
+
+    for rule in filter_config['filters']:
+        field_name = rule.get('field', '')
+        raw_field = field_map.get(field_name, field_name)
+        if raw_field not in names:
+            continue
+
+        vals = np.empty(len(idx_all), dtype=float)
+        for j, wi in enumerate(idx_all):
+            if same_len:
+                vals[j] = float(rec[raw_field][wi])
+            elif rec_times is not None:
+                ri = int(np.argmin(np.abs(rec_times - float(wfm[wi]['SSSSSSSS.mmmuuun']))))
+                vals[j] = float(rec[raw_field][ri])
+            else:
+                vals[j] = np.nan
+
+        rule_mask = np.ones(len(idx_all), dtype=bool)
+        if 'exclude_values' in rule:
+            for ev in rule['exclude_values']:
+                rule_mask &= vals != float(ev)
+        if 'min' in rule:
+            rule_mask &= vals >= float(rule['min'])
+        if 'max' in rule:
+            rule_mask &= vals <= float(rule['max'])
+
+        removed = int(np.sum(keep & ~rule_mask))
+        if removed > 0:
+            print(f"      [filter] {field_name}: removed {removed} signals")
+        keep &= rule_mask
+
+    result = idx_all[keep]
+    total_removed = len(idx_all) - len(result)
+    if total_removed > 0:
+        print(f"      [filter] total: {len(result)} signals kept, {total_removed} removed")
+    return result
+
+
 def load_waveforms(dta_path, channel, max_waveforms, fixed_length,
-                   keep_pretrigger, feature, denoiser=None):
+                   keep_pretrigger, feature, denoiser=None, filter_config=None):
     """Return (X, X_wave, meta, L, C).
 
     X      : model input (N, C, L) for the chosen feature
@@ -243,6 +307,12 @@ def load_waveforms(dta_path, channel, max_waveforms, fixed_length,
     idx_all = np.where(mask)[0]
     if len(idx_all) == 0:
         raise SystemExit(f"No waveforms on channel {channel}.")
+
+    if filter_config is None:
+        filter_config = _load_filter_config(None)
+    idx_all = _apply_wfm_filter(rec, wfm, idx_all, filter_config)
+    if len(idx_all) == 0:
+        raise SystemExit("No waveforms left after filtering.")
 
     # ---------- auto-detect waveform length ----------
     if fixed_length <= 0:
@@ -1020,6 +1090,12 @@ def main():
                    help='hdbscan: lower = more clusters')
     g.add_argument('--scan-k', type=int, default=0, dest='scan_k',
                    help='sweep KMeans k=2..N on the latent and report silhouette, then continue')
+
+    g = ap.add_argument_group('signal filtering')
+    g.add_argument('--filter-config', default=None, dest='filter_config',
+                   help='path to filter_config.json; default: repo-root filter_config.json')
+    g.add_argument('--no-filter', action='store_true', dest='no_filter',
+                   help='disable signal pre-filtering entirely')
     args = ap.parse_args()
 
     try:
@@ -1037,9 +1113,15 @@ def main():
                 if 'wavelet' in args.denoise else "")
         print(f"[0/5] Denoising: {args.denoise}{wave}{band}")
 
+    filter_cfg = {'filters': []} if args.no_filter else _load_filter_config(args.filter_config)
+    if filter_cfg.get('filters'):
+        print(f"[0/5] Signal filter: {len(filter_cfg['filters'])} rule(s) from "
+              f"{args.filter_config or 'filter_config.json'}")
+
     X, X_wave, meta, length, C = load_waveforms(
         args.input, args.channel, args.max_waveforms,
-        args.fixed_length, args.keep_pretrigger, args.feature, denoiser)
+        args.fixed_length, args.keep_pretrigger, args.feature, denoiser,
+        filter_config=filter_cfg)
     latent, loss_curve = train(args, X, length, C)
     latent_diagnostic(latent)
     if args.scan_k >= 2:

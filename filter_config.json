@@ -1,0 +1,43 @@
+{
+  "description": "Signal pre-filter configuration for AE clustering. Signals matching ANY exclude rule are removed before clustering.",
+
+  "filters": [
+    {
+      "field": "energy",
+      "exclude_values": [0, 1],
+      "comment": "Remove signals with energy exactly 0 or 1 (noise / invalid)"
+    },
+    {
+      "field": "amplitude",
+      "min": 43,
+      "comment": "Remove signals with amplitude < 43 dB (below meaningful threshold)"
+    }
+  ],
+
+  "field_name_map": {
+    "energy": "ENER",
+    "amplitude": "AMP",
+    "duration": "DURATION",
+    "rise": "RISE",
+    "counts": "COUN",
+    "peak_frequency": "P-FRQ",
+    "avg_frequency": "A-FRQ",
+    "freq_centroid": "FRQ-C",
+    "rms": "RMS",
+    "abs_energy": "ABS-ENERGY",
+    "signal_strength": "SIG STRENGTH",
+    "channel": "CH"
+  },
+
+  "_usage_notes": {
+    "exclude_values": "Remove signals where field == any of these values",
+    "min": "Remove signals where field < min",
+    "max": "Remove signals where field > max",
+    "example_add_duration_filter": {
+      "field": "duration",
+      "min": 10,
+      "max": 100000,
+      "comment": "Keep only duration between 10-100000 μs"
+    }
+  }
+}
