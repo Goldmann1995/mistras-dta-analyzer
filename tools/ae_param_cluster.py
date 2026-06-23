@@ -13,6 +13,18 @@ Pipeline:
                →  decision-tree rules (explainable)
                →  scatter plots + CSV + summary
 
+Outputs (saved into --out):
+    scatter_pairs.png              pairwise feature scatter, colored by cluster
+    cluster_amplitude_vs_freq.png  amplitude (dB) vs peak frequency scatter
+    cluster_timeline.png           amplitude vs time, colored by cluster
+    cluster_time_vs_freq.png       peak frequency vs time, colored by cluster
+    cluster_entropy.png            entropy boxplot + entropy-vs-amplitude scatter
+    feature_boxplots.png           feature distributions per cluster
+    feature_importance.png         decision tree feature importance
+    cluster_labels.csv             per-hit: index, time, channel, features, cluster
+    cluster_features.csv           per-cluster mean/std of all available AE features
+    summary.txt                    config + cluster sizes + metrics + tree rules
+
 Examples:
     python tools/ae_param_cluster.py data.DTA
     python tools/ae_param_cluster.py data.DTA --features amplitude peak_frequency entropy
@@ -25,7 +37,6 @@ import sys
 import csv
 import argparse
 import json
-import textwrap
 
 import numpy as np
 
@@ -36,7 +47,6 @@ if _REPO_ROOT not in sys.path:
 from MistrasDTA import read_bin, get_waveform_data  # noqa: E402
 
 # ── feature registry ──────────────────────────────────────────────────────── #
-# Maps friendly name → raw recarray field name
 FIELD_MAP = {
     'amplitude':      'AMP',
     'energy':         'ENER',
@@ -53,8 +63,16 @@ FIELD_MAP = {
     'signal_strength': 'SIG STRENGTH',
 }
 
-COMPUTED_FEATURES = {'entropy'}
+# All parametric AE hit features for characterization (same as ae_deep_cluster)
+FEATURE_FIELDS = [
+    ('AMP', 'amplitude_dB'), ('ENER', 'energy'), ('ABS-ENERGY', 'abs_energy'),
+    ('RISE', 'rise_us'), ('DURATION', 'duration_us'), ('COUN', 'counts'),
+    ('A-FRQ', 'avg_freq_kHz'), ('P-FRQ', 'peak_freq_kHz'),
+    ('FRQ-C', 'centroid_freq_kHz'), ('R-FRQ', 'rev_freq_kHz'),
+    ('I-FRQ', 'init_freq_kHz'),
+]
 
+COMPUTED_FEATURES = {'entropy'}
 ALL_FEATURES = sorted(FIELD_MAP.keys()) + sorted(COMPUTED_FEATURES)
 
 
@@ -104,7 +122,6 @@ def _build_filter_mask(rec, config):
     field_map = config.get('field_name_map', {})
     names = rec.dtype.names
     removed_counts = []
-
     for rule in config.get('filters', []):
         field_name = rule.get('field', '')
         raw_field = field_map.get(field_name, field_name)
@@ -123,12 +140,18 @@ def _build_filter_mask(rec, config):
         if removed > 0:
             removed_counts.append((field_name, removed))
         keep &= rule_mask
-
     total = n - int(np.sum(keep))
     if total > 0:
         details = "; ".join(f"{f}: -{c}" for f, c in removed_counts)
         print(f"  [filter] removed {total}/{n} hits ({details})")
     return keep
+
+
+def _extract_hit_feats(rec_row):
+    if rec_row is None:
+        return {}
+    names = rec_row.dtype.names
+    return {label: float(rec_row[f]) for f, label in FEATURE_FIELDS if f in names}
 
 
 # ── data loading ──────────────────────────────────────────────────────────── #
@@ -140,20 +163,17 @@ def load_data(dta_path, features, channel, filter_config):
     need_entropy = 'entropy' in features
     rec_features = [f for f in features if f != 'entropy']
 
-    # validate requested features exist
     names = rec.dtype.names
     for f in rec_features:
         rf = FIELD_MAP.get(f, f)
         if rf not in names:
             raise SystemExit(f"Feature '{f}' (field '{rf}') not found. Available: {list(names)}")
 
-    # channel mask
     mask = np.ones(len(rec), dtype=bool)
     if channel is not None:
         mask &= rec['CH'] == channel
         print(f"  channel {channel}: {np.sum(mask)} hits")
 
-    # signal filter
     fmask = _build_filter_mask(rec, filter_config)
     mask &= fmask
 
@@ -163,11 +183,22 @@ def load_data(dta_path, features, channel, filter_config):
 
     filtered_rec = rec[mask]
 
-    # build feature matrix
+    # build clustering feature matrix
     columns = {}
     for f in rec_features:
         rf = FIELD_MAP.get(f, f)
         columns[f] = filtered_rec[rf].astype(float)
+
+    # extract ALL hit features for characterization plots (like ae_deep_cluster)
+    meta = []
+    for j, idx in enumerate(indices):
+        feat = _extract_hit_feats(rec[idx])
+        meta.append({
+            'index': int(idx),
+            'channel': int(rec[idx]['CH']) if 'CH' in names else 0,
+            'time': float(rec[idx]['SSSSSSSS.mmmuuun']) if 'SSSSSSSS.mmmuuun' in names else 0.0,
+            'feat': feat,
+        })
 
     # compute entropy from waveforms
     if need_entropy:
@@ -187,6 +218,7 @@ def load_data(dta_path, features, channel, filter_config):
                         V = V[trim:]
                     entropies[j] = compute_waveform_entropy(V)
                     matched += 1
+                    meta[j]['feat']['entropy_nats'] = entropies[j]
                 except Exception:
                     pass
         elif has_wfm:
@@ -206,13 +238,13 @@ def load_data(dta_path, features, channel, filter_config):
                                 V = V[trim:]
                             entropies[j] = compute_waveform_entropy(V)
                             matched += 1
+                            meta[j]['feat']['entropy_nats'] = entropies[j]
                         except Exception:
                             pass
 
         print(f"  entropy computed for {matched}/{len(indices)} hits")
         columns['entropy'] = entropies
 
-    # stack into matrix, filter NaN rows
     feat_names = [f for f in features if f in columns]
     X_raw = np.column_stack([columns[f] for f in feat_names])
     valid = np.all(np.isfinite(X_raw), axis=1)
@@ -222,14 +254,13 @@ def load_data(dta_path, features, channel, filter_config):
 
     X_raw = X_raw[valid]
     indices = indices[valid]
+    meta = [meta[i] for i in range(len(valid)) if valid[i]]
 
-    # extract time and channel for CSV output
-    time_field = 'SSSSSSSS.mmmuuun'
-    times = rec[time_field][indices].astype(float) if time_field in rec.dtype.names else np.zeros(len(indices))
-    channels = rec['CH'][indices].astype(int) if 'CH' in rec.dtype.names else np.zeros(len(indices), dtype=int)
+    times = np.array([md['time'] for md in meta])
+    channels_arr = np.array([md['channel'] for md in meta])
 
     print(f"  {len(indices)} hits with {len(feat_names)} features ready for clustering")
-    return X_raw, feat_names, indices, times, channels
+    return X_raw, feat_names, indices, times, channels_arr, meta
 
 
 # ── clustering ────────────────────────────────────────────────────────────── #
@@ -267,7 +298,6 @@ def do_cluster(X_raw, feat_names, algorithm, n_clusters, eps, min_samples, min_c
     noise = int(np.sum(labels == -1))
     print(f"  {len(valid_labels)} clusters, {noise} noise points")
 
-    # metrics
     metrics = {}
     non_noise = labels >= 0
     if len(valid_labels) >= 2 and np.sum(non_noise) > len(valid_labels):
@@ -277,7 +307,6 @@ def do_cluster(X_raw, feat_names, algorithm, n_clusters, eps, min_samples, min_c
         print(f"  silhouette={metrics['silhouette']:.3f}  CH={metrics['calinski_harabasz']:.0f}  "
               f"DB={metrics['davies_bouldin']:.3f}")
 
-    # decision tree
     tree_rules = []
     tree_importance = []
     tree_accuracy = 0.0
@@ -346,9 +375,9 @@ def _extract_tree_rules(tree_model, feature_names, class_labels):
     return rules
 
 
-# ── output ────────────────────────────────────────────────────────────────── #
+# ── output (matching ae_deep_cluster.py plots) ────────────────────────────── #
 def save_outputs(args, X_raw, feat_names, indices, times, channels, labels,
-                 valid_labels, metrics, tree_rules, tree_importance, tree_accuracy):
+                 valid_labels, metrics, tree_rules, tree_importance, tree_accuracy, meta):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -358,21 +387,14 @@ def save_outputs(args, X_raw, feat_names, indices, times, channels, labels,
     print(f"[4/4] Saving to {out}/ ...")
 
     n_clusters = len(valid_labels)
-    cmap = plt.cm.get_cmap('tab10', max(n_clusters, 1))
+    cmap = plt.get_cmap('tab10')
 
-    def cluster_colors(labs):
-        colors = []
-        for l in labs:
-            if l < 0:
-                colors.append((0.7, 0.7, 0.7, 0.4))
-            else:
-                colors.append(cmap(l % 10))
-        return colors
+    def color(l):
+        return (0.3, 0.3, 0.3, 0.4) if l == -1 else cmap(l % 10)
 
-    cc = cluster_colors(labels)
-
-    # ── pairwise scatter plots ──
     nf = len(feat_names)
+
+    # ── 1. scatter_pairs.png — pairwise feature scatter ──
     if nf >= 2:
         from itertools import combinations
         pairs = list(combinations(range(nf), 2))
@@ -382,10 +404,16 @@ def save_outputs(args, X_raw, feat_names, indices, times, channels, labels,
         fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 5 * rows), squeeze=False)
         for idx, (i, j) in enumerate(pairs):
             ax = axes[idx // cols][idx % cols]
-            ax.scatter(X_raw[:, i], X_raw[:, j], c=cc, s=8, alpha=0.6, edgecolors='none')
+            for l in sorted(set(labels)):
+                mask = labels == l
+                ax.scatter(X_raw[mask, i], X_raw[mask, j], s=18, alpha=0.7,
+                           color=color(l), edgecolors='none',
+                           label=('noise' if l == -1 else f'C{l} (n={int(np.sum(mask))})'))
             ax.set_xlabel(feat_names[i])
             ax.set_ylabel(feat_names[j])
             ax.set_title(f'{feat_names[i]} vs {feat_names[j]}')
+            ax.legend(markerscale=1.5, fontsize=8, loc='best')
+            ax.grid(alpha=0.25)
         for idx in range(n_pairs, rows * cols):
             axes[idx // cols][idx % cols].set_visible(False)
         fig.suptitle(f'Parametric Clustering ({args.algorithm}, k={n_clusters})', fontsize=14)
@@ -394,19 +422,127 @@ def save_outputs(args, X_raw, feat_names, indices, times, channels, labels,
         plt.close(fig)
         print(f"  scatter_pairs.png ({n_pairs} pair(s))")
 
-    # ── cluster timeline ──
-    if np.any(times > 0):
-        fig, ax = plt.subplots(figsize=(12, 4))
-        ax.scatter(times, labels, c=cc, s=6, alpha=0.5, edgecolors='none')
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Cluster')
-        ax.set_title('Cluster assignment over time')
-        fig.tight_layout()
-        fig.savefig(os.path.join(out, 'cluster_timeline.png'), dpi=150)
-        plt.close(fig)
-        print("  cluster_timeline.png")
+    # ── 2. cluster_amplitude_vs_freq.png ──
+    freqs = []
+    amps = []
+    clus = []
+    for md, label in zip(meta, labels):
+        feat = md.get('feat', {})
+        if 'amplitude_dB' not in feat:
+            continue
+        freq = next((feat[k] for k in ('peak_freq_kHz', 'centroid_freq_kHz', 'avg_freq_kHz') if k in feat), None)
+        if freq is None:
+            continue
+        freqs.append(float(freq))
+        amps.append(float(feat['amplitude_dB']))
+        clus.append(label)
 
-    # ── feature boxplots per cluster ──
+    if freqs:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        freqs_a = np.array(freqs)
+        amps_a = np.array(amps)
+        clus_a = np.array(clus)
+        for l in sorted(set(clus_a)):
+            mask = clus_a == l
+            ax.scatter(freqs_a[mask], amps_a[mask], s=18, alpha=0.7,
+                       color=color(l), label=('noise' if l == -1 else f'C{l} (n={int(np.sum(mask))})'))
+        ax.set_xlabel('Frequency (kHz)'); ax.set_ylabel('Amplitude (dB)')
+        ax.set_title('AE hit amplitude vs frequency by cluster')
+        ax.legend(markerscale=1.5, fontsize=9, loc='best')
+        ax.grid(alpha=0.25); plt.tight_layout()
+        plt.savefig(os.path.join(out, 'cluster_amplitude_vs_freq.png'), dpi=150); plt.close()
+        print("  cluster_amplitude_vs_freq.png")
+    else:
+        print('  [skip] no amplitude/frequency data for amplitude_vs_freq plot')
+
+    # ── 3. cluster_timeline.png — amplitude vs time ──
+    amps_t = np.array([md.get('feat', {}).get('amplitude_dB', np.nan) for md in meta])
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for l in sorted(set(labels)):
+        mask = (labels == l) & ~np.isnan(amps_t)
+        if np.sum(mask) > 0:
+            ax.scatter(times[mask], amps_t[mask], s=24, alpha=0.7,
+                       color=color(l), edgecolors='none',
+                       label=('noise' if l == -1 else f'C{l} (n={int(np.sum(labels == l))})'))
+    ax.set_xlabel('Time (s)'); ax.set_ylabel('Amplitude (dB)')
+    ax.set_title('AE hit amplitude vs time by cluster')
+    ax.legend(markerscale=1.0, fontsize=9, loc='best')
+    ax.grid(alpha=0.25); plt.tight_layout()
+    plt.savefig(os.path.join(out, 'cluster_timeline.png'), dpi=150); plt.close()
+    print("  cluster_timeline.png")
+
+    # ── 4. cluster_time_vs_freq.png — peak frequency vs time ──
+    times_freq = []
+    freqs_freq = []
+    clus_freq = []
+    for md, label in zip(meta, labels):
+        feat = md.get('feat', {})
+        freq = next((feat[k] for k in ('peak_freq_kHz', 'centroid_freq_kHz', 'avg_freq_kHz') if k in feat), None)
+        if freq is None:
+            continue
+        times_freq.append(float(md['time']))
+        freqs_freq.append(float(freq))
+        clus_freq.append(label)
+
+    if times_freq:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        times_freq = np.array(times_freq)
+        freqs_freq = np.array(freqs_freq)
+        clus_freq = np.array(clus_freq)
+        for l in sorted(set(clus_freq)):
+            mask = clus_freq == l
+            ax.scatter(times_freq[mask], freqs_freq[mask], s=24, alpha=0.7,
+                       color=color(l), edgecolors='none',
+                       label=('noise' if l == -1 else f'C{l} (n={int(np.sum(mask))})'))
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Peak Frequency (kHz)')
+        ax.set_title('AE hit time vs peak frequency by cluster')
+        ax.legend(markerscale=1.0, fontsize=9, loc='best')
+        ax.grid(alpha=0.25); plt.tight_layout()
+        plt.savefig(os.path.join(out, 'cluster_time_vs_freq.png'), dpi=150); plt.close()
+        print("  cluster_time_vs_freq.png")
+    else:
+        print('  [skip] no peak frequency data for time_vs_freq plot')
+
+    # ── 5. cluster_entropy.png — entropy boxplot + entropy vs amplitude ──
+    entropies = np.array([md.get('feat', {}).get('entropy_nats', np.nan) for md in meta])
+    if not np.all(np.isnan(entropies)):
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+        ax = axes[0]
+        box_data = [entropies[labels == l] for l in valid_labels]
+        box_data = [d[~np.isnan(d)] for d in box_data]
+        bp = ax.boxplot(box_data, labels=[f'C{l}' for l in valid_labels], patch_artist=True)
+        for patch, l in zip(bp['boxes'], valid_labels):
+            patch.set_facecolor(color(l))
+            patch.set_alpha(0.6)
+        ax.set_ylabel('Entropy (nats)')
+        ax.set_title('Waveform entropy distribution per cluster')
+        ax.grid(alpha=0.25)
+
+        ax = axes[1]
+        amps_e = np.array([md.get('feat', {}).get('amplitude_dB', np.nan) for md in meta])
+        has_both = ~np.isnan(entropies) & ~np.isnan(amps_e)
+        if np.sum(has_both) > 0:
+            for l in sorted(set(labels)):
+                mask = (labels == l) & has_both
+                if np.sum(mask) > 0:
+                    ax.scatter(entropies[mask], amps_e[mask], s=18, alpha=0.7,
+                               color=color(l),
+                               label=('noise' if l == -1 else f'C{l}'))
+            ax.set_xlabel('Entropy (nats)')
+            ax.set_ylabel('Amplitude (dB)')
+            ax.set_title('Waveform entropy vs amplitude by cluster')
+            ax.legend(fontsize=9)
+            ax.grid(alpha=0.25)
+        else:
+            ax.set_visible(False)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(out, 'cluster_entropy.png'), dpi=150); plt.close()
+        print("  cluster_entropy.png")
+
+    # ── 6. feature_boxplots.png ──
     fig, axes = plt.subplots(1, nf, figsize=(5 * nf, 5), squeeze=False)
     for fi in range(nf):
         ax = axes[0][fi]
@@ -415,24 +551,25 @@ def save_outputs(args, X_raw, feat_names, indices, times, channels, labels,
         for cl in valid_labels:
             data_per_cluster.append(X_raw[labels == cl, fi])
             tick_labels.append(f'C{cl}')
-        if labels.min() < 0:
+        if np.any(labels < 0):
             data_per_cluster.append(X_raw[labels < 0, fi])
             tick_labels.append('noise')
         bp = ax.boxplot(data_per_cluster, labels=tick_labels, patch_artist=True)
         for k, box in enumerate(bp['boxes']):
             if k < n_clusters:
-                box.set_facecolor(cmap(valid_labels[k] % 10))
+                box.set_facecolor(color(valid_labels[k]))
+                box.set_alpha(0.6)
             else:
                 box.set_facecolor((0.7, 0.7, 0.7, 0.5))
         ax.set_title(feat_names[fi])
         ax.set_ylabel(feat_names[fi])
-    fig.suptitle('Feature distributions per cluster', fontsize=14)
+        ax.grid(alpha=0.25)
+    fig.suptitle('Clustering feature distributions per cluster', fontsize=14)
     fig.tight_layout()
-    fig.savefig(os.path.join(out, 'feature_boxplots.png'), dpi=150)
-    plt.close(fig)
+    fig.savefig(os.path.join(out, 'feature_boxplots.png'), dpi=150); plt.close()
     print("  feature_boxplots.png")
 
-    # ── feature importance bar chart ──
+    # ── 7. feature_importance.png ──
     if tree_importance:
         fig, ax = plt.subplots(figsize=(6, 4))
         names_sorted = [t[0] for t in tree_importance]
@@ -441,11 +578,37 @@ def save_outputs(args, X_raw, feat_names, indices, times, channels, labels,
         ax.set_xlabel('Importance')
         ax.set_title(f'Decision Tree Feature Importance (acc={tree_accuracy:.1%})')
         fig.tight_layout()
-        fig.savefig(os.path.join(out, 'feature_importance.png'), dpi=150)
-        plt.close(fig)
+        fig.savefig(os.path.join(out, 'feature_importance.png'), dpi=150); plt.close()
         print("  feature_importance.png")
 
-    # ── CSV ──
+    # ── 8. cluster_features.csv — all AE features per cluster ──
+    keys = [lbl for _, lbl in FEATURE_FIELDS
+            if any(lbl in md.get('feat', {}) for md in meta)]
+    if 'entropy_nats' not in keys and any('entropy_nats' in md.get('feat', {}) for md in meta):
+        keys.append('entropy_nats')
+
+    if keys:
+        feat_rows = []
+        for l in valid_labels:
+            members = [i for i in range(len(meta)) if labels[i] == l]
+            row = {'cluster': l, 'count': len(members)}
+            for k in keys:
+                vals = np.array([meta[i]['feat'][k] for i in members
+                                 if k in meta[i]['feat']], dtype=float)
+                row[k] = (float(np.mean(vals)), float(np.std(vals))) if len(vals) else (np.nan, np.nan)
+            feat_rows.append(row)
+
+        with open(os.path.join(out, 'cluster_features.csv'), 'w', newline='') as f:
+            w = csv.writer(f)
+            header = ['cluster', 'count'] + [f'{k}_mean' for k in keys] + [f'{k}_std' for k in keys]
+            w.writerow(header)
+            for r in feat_rows:
+                w.writerow([r['cluster'], r['count']]
+                           + [round(r[k][0], 3) for k in keys]
+                           + [round(r[k][1], 3) for k in keys])
+        print("  cluster_features.csv")
+
+    # ── 9. cluster_labels.csv ──
     csv_path = os.path.join(out, 'cluster_labels.csv')
     with open(csv_path, 'w', newline='') as f:
         writer = csv.writer(f)
@@ -458,50 +621,64 @@ def save_outputs(args, X_raw, feat_names, indices, times, channels, labels,
             writer.writerow(row)
     print(f"  cluster_labels.csv ({len(indices)} rows)")
 
-    # ── summary.txt ──
-    lines = [
-        f"Parametric AE Clustering Summary",
-        f"{'=' * 40}",
+    # ── 10. summary.txt ──
+    out_lines = [
+        "Parametric AE Clustering Summary",
+        "=" * 40,
         f"Input:       {args.input}",
         f"Algorithm:   {args.algorithm}",
         f"Features:    {', '.join(feat_names)}",
         f"Clusters:    {n_clusters}",
         f"Total hits:  {len(labels)}",
         f"Noise:       {int(np.sum(labels < 0))}",
-        f"",
+        "",
     ]
     if metrics:
-        lines.append("Metrics:")
+        out_lines.append("Metrics:")
         for k, v in metrics.items():
-            lines.append(f"  {k}: {v:.4f}")
-        lines.append("")
+            out_lines.append(f"  {k}: {v:.4f}")
+        out_lines.append("")
 
-    lines.append("Cluster sizes:")
+    out_lines.append("Cluster sizes:")
     for cl in valid_labels:
         cnt = int(np.sum(labels == cl))
         pct = 100.0 * cnt / len(labels)
-        lines.append(f"  Cluster {cl}: {cnt} ({pct:.1f}%)")
-
-        # per-cluster feature stats
+        out_lines.append(f"  Cluster {cl}: {cnt} ({pct:.1f}%)")
         cmask = labels == cl
         for fi, fn in enumerate(feat_names):
             vals = X_raw[cmask, fi]
-            lines.append(f"    {fn}: mean={np.mean(vals):.3f}  std={np.std(vals):.3f}  "
-                         f"min={np.min(vals):.3f}  max={np.max(vals):.3f}  median={np.median(vals):.3f}")
-    lines.append("")
+            out_lines.append(f"    {fn}: mean={np.mean(vals):.3f}  std={np.std(vals):.3f}  "
+                             f"min={np.min(vals):.3f}  max={np.max(vals):.3f}  median={np.median(vals):.3f}")
+    out_lines.append("")
 
     if tree_rules:
-        lines.append(f"Decision Tree Rules (accuracy={tree_accuracy:.1%}):")
+        out_lines.append(f"Decision Tree Rules (accuracy={tree_accuracy:.1%}):")
         for r in tree_rules:
-            lines.append(f"  {r['rule_text']}")
-        lines.append("")
+            out_lines.append(f"  {r['rule_text']}")
+        out_lines.append("")
 
     if tree_importance:
-        lines.append("Feature Importance:")
+        out_lines.append("Feature Importance:")
         for name, imp in tree_importance:
-            lines.append(f"  {name}: {imp:.4f}")
+            out_lines.append(f"  {name}: {imp:.4f}")
+        out_lines.append("")
 
-    summary = "\n".join(lines)
+    # physical interpretation table (same format as ae_deep_cluster)
+    if keys:
+        hi = [k for k in ('peak_freq_kHz', 'centroid_freq_kHz', 'avg_freq_kHz',
+                           'amplitude_dB', 'energy', 'duration_us', 'rise_us',
+                           'entropy_nats') if k in keys]
+        if hi:
+            out_lines.append("Physical interpretation (mean per cluster):")
+            out_lines.append("  cluster  " + "  ".join(f"{k:>16}" for k in hi))
+            for r in feat_rows:
+                out_lines.append(f"  C{r['cluster']:<6} "
+                                 + "  ".join(f"{r[k][0]:>16.2f}" for k in hi))
+            out_lines.append("  -> low centroid/peak freq usually = delamination/debonding;")
+            out_lines.append("     high freq = matrix cracking / fiber breakage (verify with your material).")
+            out_lines.append("")
+
+    summary = "\n".join(out_lines)
     with open(os.path.join(out, 'summary.txt'), 'w') as f:
         f.write(summary)
     print("  summary.txt")
@@ -544,7 +721,6 @@ def main():
 
     args = ap.parse_args()
 
-    # validate features
     for f in args.features:
         if f not in FIELD_MAP and f not in COMPUTED_FEATURES:
             raise SystemExit(f"Unknown feature '{f}'. Available: {', '.join(ALL_FEATURES)}")
@@ -553,15 +729,15 @@ def main():
     if filter_cfg.get('filters'):
         print(f"[filter] {len(filter_cfg['filters'])} rule(s) active")
 
-    X_raw, feat_names, indices, times, channels = load_data(
+    X_raw, feat_names, indices, times, channels_arr, meta = load_data(
         args.input, args.features, args.channel, filter_cfg)
 
     labels, valid_labels, metrics, tree_rules, tree_importance, tree_accuracy = do_cluster(
         X_raw, feat_names, args.algorithm, args.clusters,
         args.eps, args.min_samples, args.min_cluster_size, args.max_tree_depth)
 
-    save_outputs(args, X_raw, feat_names, indices, times, channels, labels,
-                 valid_labels, metrics, tree_rules, tree_importance, tree_accuracy)
+    save_outputs(args, X_raw, feat_names, indices, times, channels_arr, labels,
+                 valid_labels, metrics, tree_rules, tree_importance, tree_accuracy, meta)
 
 
 if __name__ == '__main__':
