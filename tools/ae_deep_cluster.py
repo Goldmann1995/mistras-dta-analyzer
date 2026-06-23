@@ -19,15 +19,17 @@ Outputs (saved into --out):
     latent_scatter.png    2D embedding, colored by cluster
     cluster_spectra.png   mean cluster frequency spectra (linear magnitude)
     cluster_amplitude_vs_freq.png  AE hit amplitude (dB) vs frequency scatter, colored by cluster
+    cluster_entropy.png   entropy boxplot + entropy-vs-amplitude scatter per cluster
     cluster_timeline.png  event timestamps colored by cluster
     prototypes.png        medoid (representative) waveform of each cluster
-    cluster_labels.csv    per-waveform: index, channel, time, cluster, latent
+    cluster_labels.csv    per-waveform: index, channel, time, cluster, entropy, latent
     latent_codes.npy      raw latent matrix (N x latent_dim)
     summary.txt           run config + cluster sizes + quality metrics
 
 Examples:
     python tools/ae_deep_cluster.py data.DTA --feature both --clusters 4
     python tools/ae_deep_cluster.py data.DTA --feature fft --algorithm hdbscan --projection umap
+    python tools/ae_deep_cluster.py data.DTA --include-entropy --clusters 4
 """
 
 import os
@@ -61,6 +63,44 @@ def _extract_feats(rec_row):
         return {}
     names = rec_row.dtype.names
     return {label: float(rec_row[f]) for f, label in FEATURE_FIELDS if f in names}
+
+
+# --------------------------------------------------------------------------- #
+# Waveform information entropy
+# --------------------------------------------------------------------------- #
+def compute_waveform_entropy(V):
+    """Shannon entropy of waveform voltage distribution using Scott's optimal
+    bin width with skewness/kurtosis correction (natural log, unit: nats)."""
+    from scipy.stats import skew, kurtosis
+    n = len(V)
+    if n < 2:
+        return 0.0
+    sigma = np.std(V)
+    if sigma == 0:
+        return 0.0
+
+    b_n = 3.49 * sigma * n ** (-1.0 / 3.0)
+
+    sk = skew(V)
+    kurt_val = kurtosis(V, fisher=True)
+
+    sk2 = sk ** 2
+    c_sk = np.sqrt(1.0 + 2.0 * sk2) if sk2 > 0 else 1.0
+    c_kur = (1.0 + (kurt_val / 4.0)) ** (-0.2) if kurt_val > -4.0 else 1.0
+
+    b_opt = b_n * c_sk * c_kur
+    if b_opt <= 0:
+        b_opt = b_n if b_n > 0 else 1.0
+
+    v_range = np.max(V) - np.min(V)
+    if v_range == 0:
+        return 0.0
+
+    num_bins = max(1, int(np.ceil(v_range / b_opt)))
+    hist, _ = np.histogram(V, bins=num_bins)
+    hist = hist[hist > 0]
+    P = hist / n
+    return float(-np.sum(P * np.log(P)))
 
 
 # --------------------------------------------------------------------------- #
@@ -261,14 +301,18 @@ def load_waveforms(dta_path, channel, max_waveforms, fixed_length,
         elif rec_times is not None:
             rec_row = rec[int(np.argmin(np.abs(rec_times - float(row['SSSSSSSS.mmmuuun']))))]
 
+        entropy_val = compute_waveform_entropy(V)
+
         feats.append(_waveform_to_features(v, L, feature))
         waves.append(v)
+        hit_feats = _extract_feats(rec_row)
+        hit_feats['entropy_nats'] = entropy_val
         meta.append({
             'index': int(i),
             'channel': int(row['CH']),
             'time': float(row['SSSSSSSS.mmmuuun']),
             'sample_rate': float(row['SRATE']),
-            'feat': _extract_feats(rec_row),
+            'feat': hit_feats,
         })
 
     if len(feats) < 4:
@@ -494,6 +538,18 @@ def cluster(args, latent, emb2d, meta=None):
         else:
             print("      [warning] no AE amplitude/peak frequency features available to augment clustering")
 
+    if args.include_entropy and meta is not None:
+        ent = np.array([md.get('feat', {}).get('entropy_nats', np.nan) for md in meta])
+        finite = np.isfinite(ent)
+        if np.sum(finite) > 0:
+            ent[~finite] = np.nanmean(ent)
+            ent_scaled = StandardScaler().fit_transform(ent.reshape(-1, 1))
+            Zlat = np.column_stack([Zlat, ent_scaled])
+            Zemb = np.column_stack([Zemb, ent_scaled])
+            print("      augmenting clustering space with waveform entropy")
+        else:
+            print("      [warning] no valid entropy values to augment clustering")
+
     density = args.algorithm in ('hdbscan', 'dbscan')
     use_embed = density and args.density_space == 'embed'
     space = Zemb if use_embed else Zlat
@@ -675,6 +731,46 @@ def characterize(args, X_wave, meta, length, labels, valid, plt, color):
     else:
         print('      [skip] no peak frequency features available for time vs freq plot')
 
+    # ----- entropy distribution per cluster -----
+    entropies = np.array([md.get('feat', {}).get('entropy_nats', np.nan) for md in meta])
+    if not np.all(np.isnan(entropies)):
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+        # box plot
+        ax = axes[0]
+        box_data = [entropies[labels == l] for l in valid]
+        box_data = [d[~np.isnan(d)] for d in box_data]
+        bp = ax.boxplot(box_data, labels=[f'C{l}' for l in valid], patch_artist=True)
+        for patch, l in zip(bp['boxes'], valid):
+            patch.set_facecolor(color(l))
+            patch.set_alpha(0.6)
+        ax.set_ylabel('Entropy (nats)')
+        ax.set_title('Waveform entropy distribution per cluster')
+        ax.grid(alpha=0.25)
+
+        # entropy vs amplitude scatter
+        ax = axes[1]
+        amps_e = np.array([md.get('feat', {}).get('amplitude_dB', np.nan) for md in meta])
+        has_both = ~np.isnan(entropies) & ~np.isnan(amps_e)
+        if np.sum(has_both) > 0:
+            for l in sorted(set(labels)):
+                mask = (labels == l) & has_both
+                if np.sum(mask) > 0:
+                    ax.scatter(entropies[mask], amps_e[mask], s=18, alpha=0.7,
+                               color=color(l),
+                               label=('noise' if l == -1 else f'C{l}'))
+            ax.set_xlabel('Entropy (nats)')
+            ax.set_ylabel('Amplitude (dB)')
+            ax.set_title('Waveform entropy vs amplitude by cluster')
+            ax.legend(fontsize=9)
+            ax.grid(alpha=0.25)
+        else:
+            ax.set_visible(False)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(args.out, 'cluster_entropy.png'), dpi=150)
+        plt.close()
+
     # ----- parametric feature table per cluster -----
     keys = [lbl for _, lbl in FEATURE_FIELDS
             if any(lbl in md.get('feat', {}) for md in meta)]
@@ -698,9 +794,10 @@ def characterize(args, X_wave, meta, length, labels, valid, plt, color):
                            + [round(r[k][0], 3) for k in keys]
                            + [round(r[k][1], 3) for k in keys])
 
-        # compact text table for the summary, highlighting frequency + energy
+        # compact text table for the summary, highlighting frequency + energy + entropy
         hi = [k for k in ('peak_freq_kHz', 'centroid_freq_kHz', 'avg_freq_kHz',
-                          'amplitude_dB', 'energy', 'duration_us', 'rise_us') if k in keys]
+                          'amplitude_dB', 'energy', 'duration_us', 'rise_us',
+                          'entropy_nats') if k in keys]
         out_lines.append("")
         out_lines.append("physical interpretation (mean per cluster):")
         out_lines.append("  cluster  " + "  ".join(f"{k:>16}" for k in hi))
@@ -798,11 +895,14 @@ def save_outputs(args, X_wave, meta, length, C, latent, loss_curve, space, label
     # labels CSV
     with open(os.path.join(args.out, 'cluster_labels.csv'), 'w', newline='') as f:
         w = csv.writer(f)
-        w.writerow(['wfm_index', 'channel', 'time_s', 'sample_rate', 'cluster']
+        w.writerow(['wfm_index', 'channel', 'time_s', 'sample_rate', 'cluster', 'entropy_nats']
                    + [f'z{i}' for i in range(latent.shape[1])])
         for i, md in enumerate(meta):
+            ent = md.get('feat', {}).get('entropy_nats', '')
+            if isinstance(ent, float):
+                ent = round(ent, 6)
             w.writerow([md['index'], md['channel'], md['time'], md['sample_rate'],
-                        int(labels[i])] + [round(float(z), 6) for z in latent[i]])
+                        int(labels[i]), ent] + [round(float(z), 6) for z in latent[i]])
 
     np.save(os.path.join(args.out, 'latent_codes.npy'), latent)
 
@@ -911,6 +1011,8 @@ def main():
                    help='space hdbscan/dbscan run on (embed=2D, robust)')
     g.add_argument('--include-hit-features', action='store_true', dest='include_hit_features',
                    help='augments clustering features with AE amplitude and peak frequency')
+    g.add_argument('--include-entropy', action='store_true', dest='include_entropy',
+                   help='augments clustering features with waveform information entropy')
     g.add_argument('--eps', type=float, default=0.3, help='for dbscan')
     g.add_argument('--min-samples', type=int, default=5, dest='min_samples',
                    help='hdbscan/dbscan: lower = less conservative')
