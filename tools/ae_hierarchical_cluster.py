@@ -944,7 +944,7 @@ def main():
     ap = argparse.ArgumentParser(
         description="Two-stage hierarchical clustering of Mistras AE waveforms.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    ap.add_argument('input', help='path to a .DTA file')
+    ap.add_argument('input', nargs='?', default=None, help='path to a .DTA file (optional with --load-cache)')
     ap.add_argument('--out', default='ae_hierarchical_out', help='output directory')
 
     g = ap.add_argument_group('preprocessing / denoising')
@@ -998,6 +998,12 @@ def main():
     g.add_argument('--umap-neighbors', type=int, default=15, dest='umap_neighbors')
     g.add_argument('--umap-mindist', type=float, default=0.1, dest='umap_mindist')
 
+    g = ap.add_argument_group('preprocessing cache')
+    g.add_argument('--save-cache', default=None, dest='save_cache', metavar='PATH',
+                   help='save preprocessed data (after denoise) to .npz for reuse')
+    g.add_argument('--load-cache', default=None, dest='load_cache', metavar='PATH',
+                   help='load preprocessed data from .npz, skip DTA reading/denoise')
+
     args = ap.parse_args()
 
     try:
@@ -1005,13 +1011,33 @@ def main():
     except ImportError:
         raise SystemExit("PyTorch required.  pip install torch")
 
-    denoiser = make_denoiser(args)
-    if denoiser is not None:
-        print(f"[0/6] Denoising: {args.denoise}")
+    if args.load_cache:
+        import json
+        data = np.load(args.load_cache)
+        X_wave, length = data['X_wave'], int(data['L'])
+        meta_path = args.load_cache.replace('.npz', '_meta.json')
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+        print(f"[1/6] Loaded from cache: {args.load_cache}")
+        print(f"      {X_wave.shape[0]} waveforms, length={length}")
+    else:
+        if not args.input:
+            raise SystemExit("Error: .DTA file path required (or use --load-cache)")
+        denoiser = make_denoiser(args)
+        if denoiser is not None:
+            print(f"[0/6] Denoising: {args.denoise}")
 
-    X_wave, meta, length = load_waveforms(
-        args.input, args.channel, args.max_waveforms,
-        args.fixed_length, args.keep_pretrigger, denoiser)
+        X_wave, meta, length = load_waveforms(
+            args.input, args.channel, args.max_waveforms,
+            args.fixed_length, args.keep_pretrigger, denoiser)
+
+        if args.save_cache:
+            import json
+            np.savez_compressed(args.save_cache, X_wave=X_wave, L=np.array(length))
+            meta_path = args.save_cache.replace('.npz', '_meta.json')
+            with open(meta_path, 'w') as f:
+                json.dump(meta, f)
+            print(f"      cache saved: {args.save_cache}")
 
     latent, loss_curve = train_autoencoder(args, X_wave, length)
 

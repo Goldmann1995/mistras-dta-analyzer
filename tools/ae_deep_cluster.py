@@ -399,6 +399,34 @@ def load_waveforms(dta_path, channel, max_waveforms, fixed_length,
     return X, X_wave, meta, L, C
 
 
+def save_preprocessed_cache(path, X, X_wave, meta, L, C):
+    """Save preprocessed waveform data so subsequent runs skip filtering."""
+    import json
+    np.savez_compressed(path, X=X, X_wave=X_wave, L=np.array(L), C=np.array(C))
+    meta_path = path.replace('.npz', '_meta.json')
+    with open(meta_path, 'w') as f:
+        json.dump(meta, f)
+    print(f"      cache saved: {path}  ({os.path.getsize(path) / 1e6:.1f} MB)")
+
+
+def load_preprocessed_cache(path):
+    """Load preprocessed waveform data from cache."""
+    import json
+    if not os.path.isfile(path):
+        raise SystemExit(f"Cache file not found: {path}")
+    meta_path = path.replace('.npz', '_meta.json')
+    if not os.path.isfile(meta_path):
+        raise SystemExit(f"Cache meta file not found: {meta_path}")
+    data = np.load(path)
+    X, X_wave = data['X'], data['X_wave']
+    L, C = int(data['L']), int(data['C'])
+    with open(meta_path, 'r') as f:
+        meta = json.load(f)
+    print(f"[1/5] Loaded from cache: {path}")
+    print(f"      {X.shape[0]} waveforms, length={L}, {C} channel(s)")
+    return X, X_wave, meta, L, C
+
+
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
@@ -1028,7 +1056,7 @@ def main():
     ap = argparse.ArgumentParser(
         description="Deep latent-space clustering of Mistras AE waveforms.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    ap.add_argument('input', help='path to a .DTA file')
+    ap.add_argument('input', nargs='?', default=None, help='path to a .DTA file (optional with --load-cache)')
     ap.add_argument('--out', default='ae_cluster_out', help='output directory')
 
     g = ap.add_argument_group('preprocessing / denoising')
@@ -1096,6 +1124,12 @@ def main():
                    help='path to filter_config.json; default: repo-root filter_config.json')
     g.add_argument('--no-filter', action='store_true', dest='no_filter',
                    help='disable signal pre-filtering entirely')
+
+    g = ap.add_argument_group('preprocessing cache')
+    g.add_argument('--save-cache', default=None, dest='save_cache', metavar='PATH',
+                   help='save preprocessed data (after filter+denoise) to .npz for reuse')
+    g.add_argument('--load-cache', default=None, dest='load_cache', metavar='PATH',
+                   help='load preprocessed data from .npz, skip DTA reading/filter/denoise')
     args = ap.parse_args()
 
     try:
@@ -1105,23 +1139,31 @@ def main():
 
     from sklearn.preprocessing import StandardScaler
 
-    denoiser = make_denoiser(args)
-    if denoiser is not None:
-        band = (f", band={args.denoise_band[0]:g}-{args.denoise_band[1]:g} kHz"
-                if 'bandpass' in args.denoise else "")
-        wave = (f", wavelet={args.denoise_wavelet}/{args.denoise_mode}"
-                if 'wavelet' in args.denoise else "")
-        print(f"[0/5] Denoising: {args.denoise}{wave}{band}")
+    if args.load_cache:
+        X, X_wave, meta, length, C = load_preprocessed_cache(args.load_cache)
+    else:
+        if not args.input:
+            raise SystemExit("Error: .DTA file path required (or use --load-cache)")
+        denoiser = make_denoiser(args)
+        if denoiser is not None:
+            band = (f", band={args.denoise_band[0]:g}-{args.denoise_band[1]:g} kHz"
+                    if 'bandpass' in args.denoise else "")
+            wave = (f", wavelet={args.denoise_wavelet}/{args.denoise_mode}"
+                    if 'wavelet' in args.denoise else "")
+            print(f"[0/5] Denoising: {args.denoise}{wave}{band}")
 
-    filter_cfg = {'filters': []} if args.no_filter else _load_filter_config(args.filter_config)
-    if filter_cfg.get('filters'):
-        print(f"[0/5] Signal filter: {len(filter_cfg['filters'])} rule(s) from "
-              f"{args.filter_config or 'filter_config.json'}")
+        filter_cfg = {'filters': []} if args.no_filter else _load_filter_config(args.filter_config)
+        if filter_cfg.get('filters'):
+            print(f"[0/5] Signal filter: {len(filter_cfg['filters'])} rule(s) from "
+                  f"{args.filter_config or 'filter_config.json'}")
 
-    X, X_wave, meta, length, C = load_waveforms(
-        args.input, args.channel, args.max_waveforms,
-        args.fixed_length, args.keep_pretrigger, args.feature, denoiser,
-        filter_config=filter_cfg)
+        X, X_wave, meta, length, C = load_waveforms(
+            args.input, args.channel, args.max_waveforms,
+            args.fixed_length, args.keep_pretrigger, args.feature, denoiser,
+            filter_config=filter_cfg)
+
+        if args.save_cache:
+            save_preprocessed_cache(args.save_cache, X, X_wave, meta, length, C)
     latent, loss_curve = train(args, X, length, C)
     latent_diagnostic(latent)
     if args.scan_k >= 2:
