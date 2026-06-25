@@ -137,7 +137,10 @@ data/
 *.gif
 *.pdf
 *.npz
+*.joblib
+*.parquet
 output/
+outputs/
 results/
 figures/
 
